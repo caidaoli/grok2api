@@ -103,7 +103,15 @@ async def _verify_ws_api_key(websocket: WebSocket) -> bool:
     token = str(websocket.query_params.get("api_key") or "").strip()
     if not token:
         return False
-    return (api_key and token == api_key) or token in legacy_keys
+    if (api_key and token == api_key) or token in legacy_keys:
+        return True
+    try:
+        await api_key_manager.init()
+        if api_key_manager.validate_key(token):
+            return True
+    except Exception as e:
+        logger.warning(f"Imagine ws api_key validation fallback failed: {e}")
+    return False
 
 
 async def _collect_imagine_batch(token: str, prompt: str, aspect_ratio: str) -> list[str]:

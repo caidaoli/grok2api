@@ -49,6 +49,25 @@ def test_imagine_ws_ping_pong(monkeypatch: pytest.MonkeyPatch):
     assert msg == {"type": "pong"}
 
 
+def test_imagine_ws_accepts_managed_api_key(monkeypatch: pytest.MonkeyPatch):
+    client = _build_client(monkeypatch, api_key="global-key")
+
+    async def _fake_init():
+        return None
+
+    monkeypatch.setattr(admin_api.api_key_manager, "init", _fake_init)
+    monkeypatch.setattr(
+        admin_api.api_key_manager,
+        "validate_key",
+        lambda token: {"key": token, "is_active": True} if token == "managed-key" else None,
+    )
+
+    with client.websocket_connect("/api/v1/admin/imagine/ws?api_key=managed-key") as ws:
+        ws.send_json({"type": "ping"})
+        msg = ws.receive_json()
+    assert msg == {"type": "pong"}
+
+
 def test_imagine_ws_empty_prompt_error(monkeypatch: pytest.MonkeyPatch):
     client = _build_client(monkeypatch, api_key="valid-key")
     with client.websocket_connect("/api/v1/admin/imagine/ws?api_key=valid-key") as ws:

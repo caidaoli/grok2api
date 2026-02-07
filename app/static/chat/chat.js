@@ -498,7 +498,10 @@ function openImageContinuousSocket(socketIndex, runToken, prompt, aspectRatio, a
       socketState.active = status === 'running';
       updateImageContinuousStats();
       if (imageContinuousRunning) {
-        if (status === 'running') setImageStatusText('Running');
+        if (status === 'running') {
+          clearImageContinuousError();
+          setImageStatusText('Running');
+        }
         if (status === 'stopped') setImageStatusText('Stopped');
       }
       updateImageContinuousButtons();
@@ -507,6 +510,7 @@ function openImageContinuousSocket(socketIndex, runToken, prompt, aspectRatio, a
 
     if (msgType === 'image') {
       socketState.active = true;
+      clearImageContinuousError();
       appendWaterfallImage(data, socketIndex);
       if (imageContinuousRunning) setImageStatusText('Running');
       updateImageContinuousButtons();
@@ -545,7 +549,14 @@ function openImageContinuousSocket(socketIndex, runToken, prompt, aspectRatio, a
         setImageContinuousError('WebSocket auth rejected. Check API key.');
         setImageStatusText('Auth failed');
       } else if (socketState.hadError && stillActive <= 0 && stillOpen <= 0) {
-        setImageContinuousError(socketState.lastError || `WS${socketIndex + 1} connection error`);
+        const closeCode = Number(event?.code || 0);
+        const closeReason = String(event?.reason || '').trim();
+        if (closeCode > 0) {
+          const suffix = closeReason ? `: ${closeReason}` : '';
+          setImageContinuousError(`WebSocket closed (${closeCode})${suffix}`);
+        } else {
+          setImageContinuousError(socketState.lastError || `WS${socketIndex + 1} connection error`);
+        }
         setImageStatusText('Disconnected');
       }
 
