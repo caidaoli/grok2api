@@ -8,7 +8,7 @@ import { extractContent, buildConversationPayload, sendConversationRequest } fro
 import { uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost, createPost } from "../grok/create";
-import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
+import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson, countPromptTokens } from "../grok/processor";
 import {
   IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL,
   generateImagineWs,
@@ -1297,12 +1297,15 @@ openAiRoutes.post("/chat/completions", async (c) => {
           break;
         }
 
+        const promptTokens = countPromptTokens(body.messages as unknown[]);
+
         if (stream) {
           const sse = createOpenAiStreamFromGrokNdjson(upstream, {
             cookie,
             settings: settingsBundle.grok,
             global: settingsBundle.global,
             origin,
+            promptTokens,
             onFinish: async ({ status, duration }) => {
               await addRequestLog(c.env.DB, {
                 ip,
@@ -1334,6 +1337,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
           global: settingsBundle.global,
           origin,
           requestedModel,
+          promptTokens,
         });
 
         const duration = (Date.now() - start) / 1000;

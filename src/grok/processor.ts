@@ -1,6 +1,35 @@
+import { encodingForModel } from "js-tiktoken";
 import type { GrokSettings, GlobalSettings } from "../settings";
 
 type GrokNdjson = Record<string, unknown>;
+
+const enc = encodingForModel("gpt-4o");
+
+/** Count tokens using tiktoken (o200k_base encoding). */
+function countTokens(text: string): number {
+  if (!text) return 0;
+  return enc.encode(text).length;
+}
+
+/** Count prompt tokens from OpenAI messages array. */
+export function countPromptTokens(messages: unknown[]): number {
+  let total = 3; // base overhead
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    total += 4; // per-message overhead
+    const content = (msg as any).content;
+    if (typeof content === "string") {
+      total += countTokens(content);
+    } else if (Array.isArray(content)) {
+      for (const item of content) {
+        if (item?.type === "text" && typeof item.text === "string") {
+          total += countTokens(item.text);
+        }
+      }
+    }
+  }
+  return total;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -121,12 +150,15 @@ export function createOpenAiStreamFromGrokNdjson(
     settings: GrokSettings;
     global: GlobalSettings;
     origin: string;
+    promptTokens?: number;
     onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
   },
 ): ReadableStream<Uint8Array> {
   const { settings, global, origin } = opts;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
+  const promptTokens = opts.promptTokens ?? 0;
+  let completionTokenCount = 0;
 
   const id = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
@@ -168,6 +200,21 @@ export function createOpenAiStreamFromGrokNdjson(
 
       const flushStop = () => {
         controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, "", "stop")));
+        // usage chunk (OpenAI spec: separate chunk with choices=[] before [DONE])
+        const completionTokens = completionTokenCount;
+        const usage = {
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model: currentModel,
+          choices: [],
+          usage: {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+          },
+        };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(usage)}\n\n`));
         controller.enqueue(encoder.encode(makeDone()));
       };
 
@@ -372,7 +419,10 @@ export function createOpenAiStreamFromGrokNdjson(
               shouldSkip = true;
             }
 
-            if (!shouldSkip) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, content)));
+            if (!shouldSkip) {
+              completionTokenCount += countTokens(content);
+              controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, content)));
+            }
             isThinking = currentIsThinking;
           }
         }
@@ -404,7 +454,7 @@ export function createOpenAiStreamFromGrokNdjson(
 
 export async function parseOpenAiFromGrokNdjson(
   grokResp: Response,
-  opts: { cookie: string; settings: GrokSettings; global: GlobalSettings; origin: string; requestedModel: string },
+  opts: { cookie: string; settings: GrokSettings; global: GlobalSettings; origin: string; requestedModel: string; promptTokens?: number },
 ): Promise<Record<string, unknown>> {
   const { global, origin, requestedModel, settings } = opts;
   const text = await grokResp.text();
@@ -471,6 +521,9 @@ export async function parseOpenAiFromGrokNdjson(
     break;
   }
 
+  const pTokens = opts.promptTokens ?? 0;
+  const cTokens = countTokens(content);
+
   return {
     id: `chatcmpl-${crypto.randomUUID()}`,
     object: "chat.completion",
@@ -483,6 +536,10 @@ export async function parseOpenAiFromGrokNdjson(
         finish_reason: "stop",
       },
     ],
-    usage: null,
+    usage: {
+      prompt_tokens: pTokens,
+      completion_tokens: cTokens,
+      total_tokens: pTokens + cTokens,
+    },
   };
 }
