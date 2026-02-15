@@ -348,7 +348,27 @@ async def admin_login_api(request: Request, body: AdminLoginBody | None = Body(d
     if username != admin_username or password != admin_password:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    return {"status": "success", "api_key": get_config("app.api_key", "")}
+    return {"status": "success", "api_key": await _resolve_admin_login_api_key()}
+
+
+async def _resolve_admin_login_api_key() -> str:
+    """
+    Resolve an API key for admin pages after successful app login.
+
+    Priority:
+    1. app.api_key (global key)
+    2. first active legacy key from data/api_keys.json
+    3. empty string (means admin routes should be open when no keys configured)
+    """
+    global_key = str(get_config("app.api_key", "") or "").strip()
+    if global_key:
+        return global_key
+
+    legacy_keys = await _load_legacy_api_keys()
+    if legacy_keys:
+        return sorted(legacy_keys)[0]
+
+    return ""
 
 @router.get("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])
 async def get_config_api():
