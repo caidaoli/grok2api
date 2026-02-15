@@ -1,14 +1,19 @@
-import { encodingForModel } from "js-tiktoken";
+import { encodingForModel, type Tiktoken } from "js-tiktoken";
 import type { GrokSettings, GlobalSettings } from "../settings";
 
 type GrokNdjson = Record<string, unknown>;
 
-const enc = encodingForModel("gpt-4o");
+// Lazy-init: Workers startup CPU limit is tight; defer encoding load to first request.
+let _enc: Tiktoken | null = null;
+function getEnc(): Tiktoken {
+  if (!_enc) _enc = encodingForModel("gpt-4o");
+  return _enc;
+}
 
 /** Count tokens using tiktoken (o200k_base encoding). */
 function countTokens(text: string): number {
   if (!text) return 0;
-  return enc.encode(text).length;
+  return getEnc().encode(text).length;
 }
 
 /** Count prompt tokens from OpenAI messages array. */
