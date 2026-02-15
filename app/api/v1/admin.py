@@ -427,9 +427,9 @@ def _safe_int(v: Any, default: int = 0) -> int:
 
 def _normalize_token_status(raw_status: Any) -> str:
     s = str(raw_status or "active").strip().lower()
-    if s == "expired":
-        return "invalid"
-    if s in ("active", "cooling", "invalid", "disabled"):
+    if s in ("expired", "invalid"):
+        return "expired"
+    if s in ("active", "cooling", "disabled"):
         return s
     return "active"
 

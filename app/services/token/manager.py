@@ -71,6 +71,9 @@ class TokenManager:
                                 raw_token = token_data.get("token")
                                 if isinstance(raw_token, str) and raw_token.startswith("sso="):
                                     token_data["token"] = raw_token[4:]
+                                # Normalize legacy "invalid" status to "expired"
+                                if token_data.get("status") == "invalid":
+                                    token_data["status"] = "expired"
                             token_info = TokenInfo(**token_data)
                             pool.add(token_info)
                         except Exception as e:
@@ -212,7 +215,7 @@ class TokenManager:
             return token[4:]
         return token
 
-    def get_token_for_model(self, model_id: str) -> Optional[str]:
+    def get_token_for_model(self, model_id: str, exclude: Optional[set] = None) -> Optional[str]:
         """按模型选择可用 Token（包含 basic->super 回退与 heavy 配额桶选择）。"""
         from app.services.grok.model import ModelService
 
@@ -221,7 +224,7 @@ class TokenManager:
             pool = self.pools.get(pool_name)
             if not pool:
                 continue
-            token_info = pool.select(bucket=bucket)
+            token_info = pool.select(bucket=bucket, exclude=exclude)
             if not token_info:
                 continue
             token = token_info.token
@@ -356,15 +359,15 @@ class TokenManager:
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
-                if status_code == 401:
-                    token.record_fail(status_code, reason)
+                token.record_fail(status_code, reason)
+                if status_code in (401, 403):
                     logger.warning(
-                        f"Token {raw_token[:10]}...: recorded 401 failure "
+                        f"Token {raw_token[:10]}...: recorded {status_code} failure "
                         f"({token.fail_count}/{FAIL_THRESHOLD}) - {reason}"
                     )
                 else:
                     logger.info(
-                        f"Token {raw_token[:10]}...: non-401 error ({status_code}) - {reason} (not counted)"
+                        f"Token {raw_token[:10]}...: non-auth error ({status_code}) - {reason} (not counted)"
                     )
                 self._schedule_save()
                 return True

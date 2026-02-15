@@ -23,7 +23,7 @@ from app.services.grok.statsig import StatsigService
 from app.services.grok.model import ModelService
 from app.services.grok.assets import UploadService
 from app.services.grok.processor import StreamProcessor, CollectProcessor
-from app.services.grok.retry import retry_on_status
+from app.services.grok.retry import RetryConfig
 from app.services.token import get_token_manager
 from app.services.request_stats import request_stats
 
@@ -312,7 +312,7 @@ class GrokChatService:
             image_attachments: 图片附件 URL 列表
         
         Raises:
-            UpstreamException: 当 Grok API 返回错误且重试耗尽时
+            UpstreamException: 当 Grok API 返回错误时
         """
         if stream is None:
             stream = get_config("grok.stream", True)
@@ -325,85 +325,55 @@ class GrokChatService:
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         timeout = get_config("grok.timeout", TIMEOUT)
         
-        # 状态码提取器
-        def extract_status(e: Exception) -> int | None:
-            if isinstance(e, UpstreamException) and e.details:
-                return e.details.get("status")
-            return None
-        
-        # 建立连接函数
-        async def establish_connection():
-            """建立连接并返回 response 对象"""
-            session = AsyncSession(impersonate=BROWSER)
-            try:
-                response = await session.post(
-                    CHAT_API,
-                    headers=headers,
-                    data=orjson.dumps(payload),
-                    timeout=timeout,
-                    stream=True,
-                    proxies=proxies
-                )
-                
-                if response.status_code != 200:
-                    try:
-                        content = await response.text()
-                        content = content[:1000] # 限制长度避免日志过大
-                    except:
-                        content = "Unable to read response content"
+        # 建立连接
+        session = AsyncSession(impersonate=BROWSER)
+        try:
+            resp = await session.post(
+                CHAT_API,
+                headers=headers,
+                data=orjson.dumps(payload),
+                timeout=timeout,
+                stream=True,
+                proxies=proxies
+            )
 
-                    logger.error(
-                        f"Chat failed: {response.status_code}, {content}",
-                        extra={"status": response.status_code, "token": token[:10] + "..."}
-                    )
-                    # 关闭 session 并抛出异常
-                    try:
-                        await session.close()
-                    except:
-                        pass
-                    raise UpstreamException(
-                        message=f"Grok API request failed: {response.status_code}",
-                        details={"status": response.status_code}
-                    )
-                
-                # 返回 session 和 response
-                return session, response
-                
-            except UpstreamException:
-                # 已经处理过的异常，直接抛出
-                raise
-            except Exception as e:
-                # 其他异常，关闭 session 并包装
-                logger.error(f"Chat request error: {e}")
+            if resp.status_code != 200:
+                try:
+                    content = await resp.text()
+                    content = content[:1000]
+                except Exception:
+                    content = "Unable to read response content"
+
+                logger.error(
+                    f"Chat failed: {resp.status_code}, {content}",
+                    extra={"status": resp.status_code, "token": token[:10] + "..."}
+                )
                 try:
                     await session.close()
-                except:
+                except Exception:
                     pass
                 raise UpstreamException(
-                    message=f"Chat connection failed: {str(e)}",
-                    details={"error": str(e)}
+                    message=f"Grok API request failed: {resp.status_code}",
+                    details={"status": resp.status_code}
                 )
-        
-        # 建立连接
-        session = None
-        response = None
-        try:
-            session, response = await retry_on_status(
-                establish_connection,
-                extract_status=extract_status
-            )
-        except Exception as e:
-            # 记录失败
-            status_code = extract_status(e)
-            if status_code:
-                token_mgr = await get_token_manager()
-                await token_mgr.record_fail(token, status_code, str(e))
+
+        except UpstreamException:
             raise
+        except Exception as e:
+            logger.error(f"Chat request error: {e}")
+            try:
+                await session.close()
+            except Exception:
+                pass
+            raise UpstreamException(
+                message=f"Chat connection failed: {str(e)}",
+                details={"error": str(e)}
+            )
         
         # 流式传输
         async def stream_response():
             try:
-                async for line in response.aiter_lines():
+                async for line in resp.aiter_lines():
                     yield line
             finally:
                 if session:
@@ -485,24 +455,67 @@ class ChatService:
         Returns:
             AsyncGenerator 或 dict
         """
-        # 获取 token
-        try:
-            token_mgr = await get_token_manager()
-            await token_mgr.reload_if_stale()
-            token = token_mgr.get_token_for_model(model)
-        except Exception as e:
-            logger.error(f"Failed to get token: {e}")
-            try:
-                await request_stats.record_request(model, success=False)
-            except Exception:
-                pass
-            raise AppException(
-                message="Internal service error obtaining token",
-                error_type=ErrorType.SERVER.value,
-                code="internal_error"
-            )
+        # 解析参数
+        think = None
+        if thinking == "enabled":
+            think = True
+        elif thinking == "disabled":
+            think = False
 
-        if not token:
+        is_stream = stream if stream is not None else get_config("grok.stream", True)
+
+        chat_request = ChatRequest(
+            model=model,
+            messages=messages,
+            stream=is_stream,
+            think=think
+        )
+
+        # 获取 token 并请求 Grok（失败时自动换 token 重试）
+        token_mgr = await get_token_manager()
+        await token_mgr.reload_if_stale()
+
+        max_retry = RetryConfig.get_max_retry()
+        retry_codes = set(RetryConfig.get_retry_codes())
+        excluded_tokens: set[str] = set()
+        token = None
+        last_error = None
+
+        service = GrokChatService()
+
+        for attempt in range(max_retry + 1):
+            # 选择 token（排除已失败的）
+            token = token_mgr.get_token_for_model(model, exclude=excluded_tokens)
+            if not token:
+                break
+
+            try:
+                response, _, model_name = await service.chat_openai(token, chat_request)
+                last_error = None
+                break
+            except UpstreamException as e:
+                status = e.details.get("status") if e.details else None
+                await token_mgr.record_fail(token, status or 0, str(e))
+                last_error = e
+
+                if status and status in retry_codes and attempt < max_retry:
+                    excluded_tokens.add(token)
+                    delay = 0.5 * (attempt + 1)
+                    logger.warning(
+                        "Retry {}/{}: token {}... got {}, switching token in {}s",
+                        attempt + 1, max_retry, token[:10], status, delay
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            except AppException:
+                try:
+                    await request_stats.record_request(model, success=False)
+                except Exception:
+                    pass
+                raise
+
+        if token is None:
             try:
                 await request_stats.record_request(model, success=False)
             except Exception:
@@ -513,44 +526,13 @@ class ChatService:
                 code="rate_limit_exceeded",
                 status_code=429
             )
-        
-        # 解析参数
-        think = None
-        if thinking == "enabled":
-            think = True
-        elif thinking == "disabled":
-            think = False
-        
-        is_stream = stream if stream is not None else get_config("grok.stream", True)
-        
-        # 构造请求
-        chat_request = ChatRequest(
-            model=model,
-            messages=messages,
-            stream=is_stream,
-            think=think
-        )
-        
-        # 请求 Grok
-        service = GrokChatService()
-        try:
-            response, _, model_name = await service.chat_openai(token, chat_request)
-        except AppException:
+
+        if last_error is not None:
             try:
                 await request_stats.record_request(model, success=False)
             except Exception:
                 pass
-            raise
-        except Exception as e:
-            logger.error(f"Chat service error: {e}")
-            try:
-                await request_stats.record_request(model, success=False)
-            except Exception:
-                pass
-            raise UpstreamException(
-                message=f"Service processing failed: {str(e)}",
-                details={"error": str(e)}
-            )
+            raise last_error
         
         # 处理响应
         prompt_tokens = _count_prompt_tokens(messages)

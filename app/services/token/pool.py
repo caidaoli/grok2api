@@ -28,20 +28,24 @@ class TokenPool:
         """获取 Token"""
         return self._tokens.get(token_str)
         
-    def select(self, bucket: str = "normal") -> Optional[TokenInfo]:
+    def select(self, bucket: str = "normal", exclude: Optional[set] = None) -> Optional[TokenInfo]:
         """
         选择一个可用 Token
-        策略: 
+        策略:
         1. 选择 active 状态且有配额的 token
         2. 优先选择剩余额度最多的
         3. 如果额度相同，随机选择（避免并发冲突）
         """
+        _exclude = exclude or set()
+
         # 选择 token
         if bucket == "heavy":
             available = [
                 t
                 for t in self._tokens.values()
-                if t.status in (TokenStatus.ACTIVE, TokenStatus.COOLING) and t.heavy_quota != 0
+                if t.status in (TokenStatus.ACTIVE, TokenStatus.COOLING)
+                and t.heavy_quota != 0
+                and t.token not in _exclude
             ]
 
             if not available:
@@ -56,8 +60,9 @@ class TokenPool:
             return random.choice(candidates)
 
         available = [
-            t for t in self._tokens.values() 
+            t for t in self._tokens.values()
             if t.status == TokenStatus.ACTIVE and t.quota > 0
+            and t.token not in _exclude
         ]
         
         if not available:
