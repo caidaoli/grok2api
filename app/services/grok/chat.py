@@ -5,6 +5,7 @@ Grok Chat 服务
 import asyncio
 import uuid
 import orjson
+import tiktoken
 from typing import Dict, List, Any
 from dataclasses import dataclass
 
@@ -30,6 +31,27 @@ from app.services.request_stats import request_stats
 CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 TIMEOUT = 120
 BROWSER = "chrome136"
+
+
+_enc = tiktoken.get_encoding("o200k_base")
+
+
+def _count_prompt_tokens(messages: List[Dict[str, Any]]) -> int:
+    """Count prompt tokens from OpenAI messages using tiktoken (o200k_base)."""
+    total = 3  # base overhead (<|start|>assistant<|message|>)
+    for msg in messages:
+        total += 4  # per-message overhead (role, delimiters)
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            if content:
+                total += len(_enc.encode(content))
+        elif isinstance(content, list):
+            for item in content:
+                if item.get("type") == "text":
+                    text = item.get("text", "")
+                    if text:
+                        total += len(_enc.encode(text))
+    return total
 
 
 @dataclass
@@ -531,8 +553,10 @@ class ChatService:
             )
         
         # 处理响应
+        prompt_tokens = _count_prompt_tokens(messages)
+
         if is_stream:
-            processor = StreamProcessor(model_name, token, think).process(response)
+            processor = StreamProcessor(model_name, token, think, prompt_tokens=prompt_tokens).process(response)
 
             async def _wrapped_stream():
                 completed = False
@@ -553,7 +577,7 @@ class ChatService:
 
             return _wrapped_stream()
 
-        result = await CollectProcessor(model_name, token).process(response)
+        result = await CollectProcessor(model_name, token, prompt_tokens=prompt_tokens).process(response)
         try:
             await token_mgr.sync_usage(token, model_name, consume_on_fail=True, is_usage=True)
             await request_stats.record_request(model_name, success=True)

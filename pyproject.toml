@@ -28,4 +28,5 @@ dependencies = [
     "rich>=14.3.2",
     "playwright>=1.58.0",
     "camoufox>=0.4.11",
+    "tiktoken>=0.12.0",
 ]

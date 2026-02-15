@@ -6,6 +6,7 @@ import uuid
 import random
 import html
 import orjson
+import tiktoken
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List
 
 from app.core.config import get_config
@@ -14,6 +15,15 @@ from app.services.grok.assets import DownloadService
 
 
 ASSET_URL = "https://assets.grok.com/"
+
+_enc = tiktoken.get_encoding("o200k_base")
+
+
+def _count_tokens(text: str) -> int:
+    """Count tokens using tiktoken (o200k_base encoding)."""
+    if not text:
+        return 0
+    return len(_enc.encode(text))
 
 
 def _build_video_poster_preview(video_url: str, thumbnail_url: str = "") -> str:
@@ -110,7 +120,7 @@ class BaseProcessor:
 class StreamProcessor(BaseProcessor):
     """流式响应处理器"""
     
-    def __init__(self, model: str, token: str = "", think: bool = None):
+    def __init__(self, model: str, token: str = "", think: bool = None, prompt_tokens: int = 0):
         super().__init__(model, token)
         self.response_id: Optional[str] = None
         self.fingerprint: str = ""
@@ -118,7 +128,9 @@ class StreamProcessor(BaseProcessor):
         self.role_sent: bool = False
         self.filter_tags = get_config("grok.filter_tags", [])
         self.image_format = get_config("app.image_format", "url")
-        
+        self.prompt_tokens = prompt_tokens
+        self._completion_tokens = 0
+
         if think is None:
             self.show_think = get_config("grok.thinking", False)
         else:
@@ -191,11 +203,29 @@ class StreamProcessor(BaseProcessor):
                 # 普通 token
                 if (token := resp.get("token")) is not None:
                     if token and not (self.filter_tags and any(t in token for t in self.filter_tags)):
+                        self._completion_tokens += _count_tokens(token)
                         yield self._sse(token)
-                        
+
             if self.think_opened:
                 yield self._sse("</think>\n")
             yield self._sse(finish="stop")
+            # usage chunk (OpenAI spec: separate chunk with choices=[] before [DONE])
+            completion_tokens = self._completion_tokens
+            total = self.prompt_tokens + completion_tokens
+            usage_chunk = {
+                "id": self.response_id or f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                "object": "chat.completion.chunk",
+                "created": self.created,
+                "model": self.model,
+                "system_fingerprint": self.fingerprint,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": self.prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total,
+                }
+            }
+            yield f"data: {orjson.dumps(usage_chunk).decode()}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"Stream processing error: {e}", extra={"model": self.model})
@@ -207,10 +237,11 @@ class StreamProcessor(BaseProcessor):
 class CollectProcessor(BaseProcessor):
     """非流式响应处理器"""
     
-    def __init__(self, model: str, token: str = ""):
+    def __init__(self, model: str, token: str = "", prompt_tokens: int = 0):
         super().__init__(model, token)
         self.image_format = get_config("app.image_format", "url")
-    
+        self.prompt_tokens = prompt_tokens
+
     async def process(self, response: AsyncIterable[bytes]) -> dict[str, Any]:
         """处理并收集完整响应"""
         response_id = ""
@@ -261,6 +292,9 @@ class CollectProcessor(BaseProcessor):
         finally:
             await self.close()
         
+        completion_tokens = _count_tokens(content)
+        total = self.prompt_tokens + completion_tokens
+
         return {
             "id": response_id,
             "object": "chat.completion",
@@ -273,9 +307,9 @@ class CollectProcessor(BaseProcessor):
                 "finish_reason": "stop"
             }],
             "usage": {
-                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                "prompt_tokens_details": {"cached_tokens": 0, "text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
-                "completion_tokens_details": {"text_tokens": 0, "audio_tokens": 0, "reasoning_tokens": 0}
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total,
             }
         }
 
