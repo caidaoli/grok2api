@@ -66,3 +66,4 @@ config.local.toml
 
 # Local tooling
 .ace-tool/
+CLAUDE.md
