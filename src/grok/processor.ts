@@ -427,8 +427,7 @@ export function createOpenAiStreamFromGrokNdjson(
           }
         }
 
-        controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, "", "stop")));
-        controller.enqueue(encoder.encode(makeDone()));
+        flushStop();
         if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
         controller.close();
       } catch (e) {
