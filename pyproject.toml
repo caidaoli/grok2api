@@ -26,7 +26,11 @@ dependencies = [
     "uvicorn>=0.37.0",
     "quart>=0.20.0",
     "rich>=14.3.2",
+    "tiktoken>=0.12.0",
+]
+
+[project.optional-dependencies]
+browser = [
     "playwright>=1.58.0",
     "camoufox>=0.4.11",
-    "tiktoken>=0.12.0",
 ]

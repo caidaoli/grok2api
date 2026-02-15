@@ -3,5 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Uncomment to pre-install Playwright Chromium for auto-registration:
+      # args:
+      #   INSTALL_BROWSER: "true"
     image: grok2api:local
-

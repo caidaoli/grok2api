@@ -165,6 +165,42 @@ class TurnstileSolverProcess:
         # Last resort: current interpreter (may fail fast with a clear error from the solver process).
         self._python_exe = sys.executable
 
+    def _ensure_browser_packages(self) -> bool:
+        """Install playwright/camoufox Python packages if missing.
+
+        Returns True if packages were newly installed (caller should
+        re-run ``_select_runtime``).
+        """
+        needed = ["playwright"]
+        if self._actual_browser_type == "camoufox":
+            needed.append("camoufox")
+
+        if self._can_import(self._python_exe, needed):
+            return False
+
+        logger.info("Browser Python packages not found, auto-installing: {}", ", ".join(needed))
+        try:
+            # Bootstrap pip into the venv if not present.
+            if not self._can_import(self._python_exe, ["pip"]):
+                subprocess.check_call(
+                    [self._python_exe, "-m", "ensurepip", "--default-pip"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            subprocess.check_call(
+                [self._python_exe, "-m", "pip", "install", "--no-cache-dir", *needed],
+            )
+            logger.info("Browser packages installed successfully")
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Auto-install of browser packages failed: {}. "
+                "Build with INSTALL_BROWSER=true or run: pip install {}",
+                exc,
+                " ".join(needed),
+            )
+            return False
+
     def _ensure_playwright_browsers(self, python_exe: str) -> None:
         """Ensure Playwright browser binaries exist (best-effort).
 
@@ -244,6 +280,11 @@ class TurnstileSolverProcess:
 
         # Decide runtime + browser strategy before checking readiness.
         self._select_runtime()
+
+        # Auto-install browser Python packages if missing (e.g. slim Docker image).
+        if self._ensure_browser_packages():
+            self._select_runtime()
+
         logger.info(
             "Turnstile solver runtime selected: python={} browser_type={}",
             self._python_exe,

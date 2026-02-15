@@ -17,3 +17,21 @@ logs
 /data/tmp
 /data/tmp/*
 /tests
+
+# TypeScript / Workers source (not used by the Python image)
+src/
+migrations/
+wrangler.toml
+wrangler.jsonc
+tsconfig.json
+package.json
+package-lock.json
+
+# CI / build config
+.github/
+Dockerfile
+docker-compose*.yml
+
+# Docs / misc
+*.md
+LICENSE
