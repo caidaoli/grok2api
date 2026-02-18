@@ -136,9 +136,14 @@ async def retry_on_status(
                         f"last status: {status_code}"
                     )
                 else:
-                    logger.error(
-                        f"Non-retryable status code: {status_code}"
-                    )
+                    if status_code == 404:
+                        logger.warning(
+                            "Non-retryable status code: 404"
+                        )
+                    else:
+                        logger.error(
+                            f"Non-retryable status code: {status_code}"
+                        )
                 
                 # 抛出最后一次的错误
                 raise

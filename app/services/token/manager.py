@@ -317,7 +317,7 @@ class TokenManager:
             return True
 
         except Exception as e:
-            logger.warning(f"Token {raw_token[:10]}...: API sync failed, fallback to local ({e})")
+            logger.warning(f"Token {raw_token}: API sync failed, fallback to local ({e})")
             return False
 
     async def sync_usage(

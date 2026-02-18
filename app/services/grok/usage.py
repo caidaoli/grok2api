@@ -3,6 +3,7 @@ Grok 用量服务
 """
 
 import asyncio
+import time
 import uuid
 from typing import Dict
 
@@ -20,8 +21,11 @@ LIMITS_API = "https://grok.com/rest/rate-limits"
 BROWSER = "chrome136"
 TIMEOUT = 10
 DEFAULT_MAX_CONCURRENT = 25
+DEFAULT_SYNC_BACKOFF_SECONDS = 600
 _USAGE_SEMAPHORE = asyncio.Semaphore(DEFAULT_MAX_CONCURRENT)
 _USAGE_SEM_VALUE = DEFAULT_MAX_CONCURRENT
+_USAGE_SYNC_COOLDOWN_UNTIL = 0.0
+_USAGE_SYNC_COOLDOWN_LOCK = asyncio.Lock()
 
 def _get_usage_semaphore() -> asyncio.Semaphore:
     global _USAGE_SEMAPHORE, _USAGE_SEM_VALUE
@@ -35,6 +39,40 @@ def _get_usage_semaphore() -> asyncio.Semaphore:
         _USAGE_SEM_VALUE = value
         _USAGE_SEMAPHORE = asyncio.Semaphore(value)
     return _USAGE_SEMAPHORE
+
+
+def _get_sync_backoff_seconds() -> int:
+    value = get_config("grok.usage_sync_backoff_seconds", DEFAULT_SYNC_BACKOFF_SECONDS)
+    try:
+        value = int(value)
+    except Exception:
+        value = DEFAULT_SYNC_BACKOFF_SECONDS
+    return max(0, value)
+
+
+def _get_sync_cooldown_remaining() -> float:
+    return max(0.0, _USAGE_SYNC_COOLDOWN_UNTIL - time.time())
+
+
+async def _arm_sync_cooldown(status_code: int) -> None:
+    """针对稳定失败状态码做短期熔断，避免日志洪泛。"""
+    if status_code != 404:
+        return
+
+    ttl = _get_sync_backoff_seconds()
+    if ttl <= 0:
+        return
+
+    now = time.time()
+    new_until = now + ttl
+
+    global _USAGE_SYNC_COOLDOWN_UNTIL
+    async with _USAGE_SYNC_COOLDOWN_LOCK:
+        if new_until <= _USAGE_SYNC_COOLDOWN_UNTIL:
+            return
+        _USAGE_SYNC_COOLDOWN_UNTIL = new_until
+
+    logger.warning(f"Usage sync disabled for {ttl}s due to status 404")
 
 
 class UsageService:
@@ -99,6 +137,11 @@ class UsageService:
             UpstreamException: 当获取失败且重试耗尽时
         """
         async with _get_usage_semaphore():
+            remaining = _get_sync_cooldown_remaining()
+            if remaining > 0:
+                logger.debug(f"Usage sync cooldown active, skip remote sync ({remaining:.0f}s remaining)")
+                return {}
+
             # 定义状态码提取器
             def extract_status(e: Exception) -> int | None:
                 if isinstance(e, UpstreamException) and e.details:
@@ -129,8 +172,12 @@ class UsageService:
                         remaining = data.get('remainingTokens', 0)
                         logger.info(f"Usage: quota {remaining} remaining")
                         return data
-                    
-                    logger.error(f"Usage failed: {response.status_code}")
+
+                    if response.status_code == 404:
+                        await _arm_sync_cooldown(response.status_code)
+                        logger.debug("Usage failed: 404")
+                    else:
+                        logger.error(f"Usage failed: {response.status_code}")
 
                     raise UpstreamException(
                         message=f"Failed to get usage stats: {response.status_code}",
