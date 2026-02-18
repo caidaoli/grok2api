@@ -126,6 +126,14 @@ class ModelService:
             display_name="Grok 4.2"
         ),
         ModelInfo(
+            model_id="grok-4.2-fast",
+            grok_model="grok-4.2",
+            rate_limit_model="grok-4.2",
+            model_mode="MODEL_MODE_FAST",
+            cost=Cost.LOW,
+            display_name="Grok 4.2 Fast"
+        ),
+        ModelInfo(
             model_id="grok-imagine-1.0",
             grok_model="grok-3",
             rate_limit_model="grok-3",

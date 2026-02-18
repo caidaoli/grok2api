@@ -24,3 +24,15 @@ def test_model_service_drops_grok_4_heavy():
 
     listed_ids = {m.model_id for m in ModelService.list()}
     assert "grok-4-heavy" not in listed_ids
+
+
+def test_model_service_supports_grok_4_2_fast():
+    model = ModelService.get("grok-4.2-fast")
+
+    assert model is not None
+    assert model.model_id == "grok-4.2-fast"
+    assert model.grok_model == "grok-4.2"
+    assert model.rate_limit_model == "grok-4.2"
+    assert model.model_mode == "MODEL_MODE_FAST"
+    assert ModelService.valid("grok-4.2-fast")
+    assert ModelService.to_grok("grok-4.2-fast") == ("grok-4.2", "MODEL_MODE_FAST")
