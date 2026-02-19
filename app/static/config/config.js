@@ -69,6 +69,14 @@ const LOCALE_MAP = {
     "assets_delete_batch_size": { title: "资产清理批量", desc: "在线资产删除单批并发数量。推荐 10。" },
     "admin_assets_batch_size": { title: "管理端批量", desc: "管理端在线资产统计/清理批量并发数量。推荐 10。" }
   },
+  "security": {
+    "label": "安全设置",
+    "auto_ban_unknown_path": { title: "自动封禁未知路径", desc: "访问不存在的路径时自动封禁来源 IP。适合公网部署防扫描。" },
+    "auto_ban_exempt_ips": { title: "封禁豁免 IP", desc: "不受自动封禁影响的 IP 白名单，如本机回环地址。" },
+    "trust_proxy_headers": { title: "信任代理头", desc: "是否从 X-Forwarded-For / CF-Connecting-IP 等头部提取真实客户端 IP。仅在反代部署时开启。" },
+    "trusted_proxy_ips": { title: "可信代理 IP", desc: "允许传递转发头的代理 IP/CIDR 列表。仅这些来源的转发头会被采信，防止客户端伪造。" },
+    "allow_private_fetch": { title: "允许内网抓取", desc: "是否允许服务端向内网地址（10.x / 172.16.x / 192.168.x）发起资源请求。关闭可防止 SSRF 攻击。" }
+  },
   "register": {
     "label": "自动注册",
     "worker_domain": { title: "Worker 域名", desc: "临时邮箱 Worker 的域名（不含 https://）。" },

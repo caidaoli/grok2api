@@ -53,7 +53,7 @@ class ResponseLoggerMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _trust_proxy_headers() -> bool:
-        return bool(get_config("security.trust_proxy_headers", False))
+        return bool(get_config("security.trust_proxy_headers", True))
 
     @staticmethod
     def _trusted_proxy_rules() -> tuple[set[str], list[ipaddress._BaseNetwork]]:

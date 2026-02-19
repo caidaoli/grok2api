@@ -47,7 +47,7 @@ admin_assets_batch_size = 10
 auto_ban_unknown_path = false
 auto_ban_exempt_ips = ["127.0.0.1", "::1"]
 # Only trust forwarded headers (CF/XFF) when the socket peer is a trusted proxy.
-trust_proxy_headers = false
+trust_proxy_headers = true
 trusted_proxy_ips = [
   "127.0.0.1",
   "::1",
