@@ -120,33 +120,32 @@ class LocalStorage(BaseStorage):
         locked = False
         start = time.monotonic()
 
-        async with self._lock:
-            try:
-                fd = open(lock_path, "a+")
-                while True:
+        try:
+            fd = open(lock_path, "a+")
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() - start >= timeout:
+                        raise StorageError(f"无法获取锁 '{name}'")
+                    await asyncio.sleep(0.05)
+            yield
+        except StorageError:
+            logger.warning(f"LocalStorage: 获取锁 '{name}' 超时 ({timeout}s)")
+            raise
+        finally:
+            if fd:
+                if locked:
                     try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        locked = True
-                        break
-                    except BlockingIOError:
-                        if time.monotonic() - start >= timeout:
-                            raise StorageError(f"无法获取锁 '{name}'")
-                        await asyncio.sleep(0.05)
-                yield
-            except StorageError:
-                logger.warning(f"LocalStorage: 获取锁 '{name}' 超时 ({timeout}s)")
-                raise
-            finally:
-                if fd:
-                    if locked:
-                        try:
-                            fcntl.flock(fd, fcntl.LOCK_UN)
-                        except Exception:
-                            pass
-                    try:
-                        fd.close()
+                        fcntl.flock(fd, fcntl.LOCK_UN)
                     except Exception:
                         pass
+                try:
+                    fd.close()
+                except Exception:
+                    pass
 
     async def load_config(self) -> Dict[str, Any]:
         if not CONFIG_FILE.exists():
