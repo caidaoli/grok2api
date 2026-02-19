@@ -257,7 +257,7 @@ class TokenManager:
                 self._schedule_save()
                 return True
         
-        logger.warning(f"Token {raw_token[:10]}...: not found for consumption")
+        logger.warning(f"Token {raw_token}: not found for consumption")
         return False
 
     def _track_usage_sync_task(self, task: asyncio.Task):
@@ -353,7 +353,7 @@ class TokenManager:
                 break
         
         if not target_token:
-            logger.warning(f"Token {raw_token[:10]}...: not found for sync")
+            logger.warning(f"Token {raw_token}: not found for sync")
             return False
 
         from app.services.grok.model import ModelService
@@ -415,9 +415,13 @@ class TokenManager:
             if token:
                 token.record_fail(status_code, reason)
                 if status_code in (401, 403):
+                    token.status = TokenStatus.EXPIRED
+                    token.fail_count = max(token.fail_count, FAIL_THRESHOLD)
+                    token.last_fail_at = int(datetime.now().timestamp() * 1000)
+                    token.last_fail_reason = reason
                     logger.warning(
-                        f"Token {raw_token[:10]}...: recorded {status_code} failure "
-                        f"({token.fail_count}/{FAIL_THRESHOLD}) - {reason}"
+                        f"Token {raw_token}: auth failure ({status_code}), "
+                        f"marked unavailable ({token.fail_count}/{FAIL_THRESHOLD}) - {reason}"
                     )
                 else:
                     logger.info(
@@ -426,7 +430,7 @@ class TokenManager:
                 self._schedule_save()
                 return True
         
-        logger.warning(f"Token {raw_token[:10]}...: not found for failure record")
+        logger.warning(f"Token {raw_token}: not found for failure record")
         return False
 
     # ========== 管理功能 ==========
@@ -471,7 +475,7 @@ class TokenManager:
         """Mark a token as expired/invalid."""
         token, raw_token = self._find_token_info(token_str)
         if not token:
-            logger.warning(f"Token {raw_token[:10]}...: not found for invalidation")
+            logger.warning(f"Token {raw_token}: not found for invalidation")
             return False
 
         token.status = TokenStatus.EXPIRED
@@ -488,7 +492,7 @@ class TokenManager:
         """Reset failure state after account-settings flow succeeded."""
         token, raw_token = self._find_token_info(token_str)
         if not token:
-            logger.warning(f"Token {raw_token[:10]}...: not found for account-settings success")
+            logger.warning(f"Token {raw_token}: not found for account-settings success")
             return False
 
         token.fail_count = 0
@@ -555,7 +559,7 @@ class TokenManager:
                 logger.info(f"Token {raw_token[:10]}...: reset completed")
                 return True
         
-        logger.warning(f"Token {raw_token[:10]}...: not found for reset")
+        logger.warning(f"Token {raw_token}: not found for reset")
         return False
 
     def get_stats(self) -> Dict[str, dict]:
@@ -650,7 +654,7 @@ class TokenManager:
                         if "401" in error_str or "Unauthorized" in error_str:
                             if retry < 2:
                                 logger.warning(
-                                    f"Token {token_info.token[:10]}...: 401 error, "
+                                    f"Token {token_info.token}: 401 error, "
                                     f"retry {retry + 1}/2..."
                                 )
                                 await asyncio.sleep(0.5)
@@ -666,7 +670,7 @@ class TokenManager:
                                 return {"recovered": False, "expired": True}
                         else:
                             logger.warning(
-                                f"Token {token_info.token[:10]}...: refresh failed ({e})"
+                                f"Token {token_info.token}: refresh failed ({e})"
                             )
                             token_info.mark_synced()
                             return {"recovered": False, "expired": False}

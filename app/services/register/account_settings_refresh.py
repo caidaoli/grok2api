@@ -176,8 +176,8 @@ class AccountSettingsRefreshService:
                         )
                         if not updated:
                             logger.warning(
-                                "Account settings refresh succeeded but token not found: {}...",
-                                token[:10],
+                                "Account settings refresh succeeded but token not found: {}",
+                                token,
                             )
                         return {
                             "token": token,

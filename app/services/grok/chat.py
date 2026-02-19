@@ -476,7 +476,6 @@ class ChatService:
         await token_mgr.reload_if_stale()
 
         max_retry = RetryConfig.get_max_retry()
-        retry_codes = set(RetryConfig.get_retry_codes())
         excluded_tokens: set[str] = set()
         token = None
         last_error = None
@@ -498,12 +497,14 @@ class ChatService:
                 await token_mgr.record_fail(token, status or 0, str(e))
                 last_error = e
 
-                if status and status in retry_codes and attempt < max_retry:
+                # 对 chat 请求，只要上游返回非 200，就切换 token 重试。
+                # 不再受 retry_status_codes 白名单限制，避免 5xx 直接失败。
+                if isinstance(status, int) and status != 200 and attempt < max_retry:
                     excluded_tokens.add(token)
                     delay = 0.5 * (attempt + 1)
                     logger.warning(
-                        "Retry {}/{}: token {}... got {}, switching token in {}s",
-                        attempt + 1, max_retry, token[:10], status, delay
+                        "Retry {}/{}: token {} got {}, switching token in {}s",
+                        attempt + 1, max_retry, token, status, delay
                     )
                     await asyncio.sleep(delay)
                     continue
