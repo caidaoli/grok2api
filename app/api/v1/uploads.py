@@ -15,6 +15,7 @@ router = APIRouter(tags=["Uploads"])
 
 BASE_DIR = Path(__file__).parent.parent.parent.parent / "data" / "tmp"
 IMAGE_DIR = BASE_DIR / "image"
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
 
 def _ext_from_mime(mime: str) -> str:
@@ -41,13 +42,19 @@ async def upload_image(file: UploadFile = File(...)):
     path = IMAGE_DIR / name
 
     size = 0
-    async with aiofiles.open(path, "wb") as f:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            await f.write(chunk)
+    try:
+        async with aiofiles.open(path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_SIZE:
+                    raise HTTPException(status_code=413, detail="File too large. Maximum is 50MB.")
+                await f.write(chunk)
+    except HTTPException:
+        path.unlink(missing_ok=True)
+        raise
 
     # Best-effort: reuse existing cache cleanup policy (size-based).
     try:

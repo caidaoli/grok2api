@@ -10,7 +10,11 @@ Token 数据模型
 from enum import Enum
 from typing import Optional, List
 from pydantic import BaseModel, Field
-from datetime import datetime
+import time
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 # 默认配额
@@ -51,7 +55,7 @@ class TokenInfo(BaseModel):
     inflight_request_id: Optional[str] = None
     
     # 统计
-    created_at: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
+    created_at: int = Field(default_factory=_now_ms)
     last_used_at: Optional[int] = None
     use_count: int = 0
     
@@ -85,7 +89,7 @@ class TokenInfo(BaseModel):
         cost = EFFORT_COST[effort]
         actual_cost = min(cost, self.quota)
         
-        self.last_used_at = int(datetime.now().timestamp() * 1000)
+        self.last_used_at = _now_ms()
         self.use_count += 1
         self.quota = max(0, self.quota - cost)
         
@@ -134,7 +138,7 @@ class TokenInfo(BaseModel):
         """
         cost = EFFORT_COST[effort]
 
-        self.last_used_at = int(datetime.now().timestamp() * 1000)
+        self.last_used_at = _now_ms()
         self.use_count += 1
 
         # 成功消耗后清空失败计数
@@ -163,7 +167,7 @@ class TokenInfo(BaseModel):
             return
 
         self.fail_count += 1
-        self.last_fail_at = int(datetime.now().timestamp() * 1000)
+        self.last_fail_at = _now_ms()
         self.last_fail_reason = reason
 
         if self.fail_count >= FAIL_THRESHOLD:
@@ -177,7 +181,7 @@ class TokenInfo(BaseModel):
         
         if is_usage:
             self.use_count += 1
-            self.last_used_at = int(datetime.now().timestamp() * 1000)
+            self.last_used_at = _now_ms()
         
         if self.quota == 0:
             self.status = TokenStatus.COOLING
@@ -192,13 +196,13 @@ class TokenInfo(BaseModel):
         if self.last_sync_at is None:
             return True
         
-        now = int(datetime.now().timestamp() * 1000)
+        now = _now_ms()
         interval_ms = interval_hours * 3600 * 1000
         return (now - self.last_sync_at) >= interval_ms
     
     def mark_synced(self):
         """标记已同步"""
-        self.last_sync_at = int(datetime.now().timestamp() * 1000)
+        self.last_sync_at = _now_ms()
 
 
 class TokenPoolStats(BaseModel):

@@ -3,11 +3,10 @@
 import asyncio
 import time
 import uuid
-from datetime import datetime
 from typing import Dict, List, Optional
 
 from app.core.logger import logger
-from app.services.token.models import TokenInfo, EffortType, TokenPoolStats, FAIL_THRESHOLD, TokenStatus
+from app.services.token.models import TokenInfo, EffortType, TokenPoolStats, FAIL_THRESHOLD, TokenStatus, _now_ms
 from app.core.storage import get_storage
 from app.core.config import get_config
 from app.services.token.pool import TokenPool
@@ -192,10 +191,6 @@ class TokenManager:
                 return token, raw_token
         return None, raw_token
 
-    @staticmethod
-    def _now_ms() -> int:
-        return int(time.time() * 1000)
-
     def _reserve_ttl_ms(self) -> int:
         value = get_config("token.reserve_ttl_ms", 180000)
         try:
@@ -216,7 +211,7 @@ class TokenManager:
             (token, request_id)；若无可用 token，返回 (None, None)
         """
         storage = get_storage()
-        now_ms = self._now_ms()
+        now_ms = _now_ms()
         ttl_ms = self._reserve_ttl_ms()
         request_id = uuid.uuid4().hex
         excluded = set(exclude or set())
@@ -264,7 +259,7 @@ class TokenManager:
             if not token:
                 return False
 
-            now_ms = self._now_ms()
+            now_ms = _now_ms()
             current_until = int(getattr(token, "inflight_until", 0) or 0)
             current_request_id = getattr(token, "inflight_request_id", None)
 
@@ -336,7 +331,7 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.replace("sso=", "")
+        raw_token = self._normalize_input_token(token_str)
 
         for pool in self.pools.values():
             token = pool.get(raw_token)
@@ -373,7 +368,7 @@ class TokenManager:
         is_usage: bool
     ) -> bool:
         """从上游同步真实额度。"""
-        raw_token = token_str.replace("sso=", "")
+        raw_token = self._normalize_input_token(token_str)
 
         try:
             from app.services.grok.usage import UsageService
@@ -434,8 +429,8 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.replace("sso=", "")
-        
+        raw_token = self._normalize_input_token(token_str)
+
         # 查找 Token 对象
         target_token: Optional[TokenInfo] = None
         for pool in self.pools.values():
@@ -499,8 +494,8 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.replace("sso=", "")
-        
+        raw_token = self._normalize_input_token(token_str)
+
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:
@@ -508,7 +503,7 @@ class TokenManager:
                 if status_code in (401, 403):
                     token.status = TokenStatus.EXPIRED
                     token.fail_count = max(token.fail_count, FAIL_THRESHOLD)
-                    token.last_fail_at = int(datetime.now().timestamp() * 1000)
+                    token.last_fail_at = _now_ms()
                     token.last_fail_reason = reason
                     logger.warning(
                         f"Token {raw_token}: auth failure ({status_code}), "
@@ -557,7 +552,7 @@ class TokenManager:
         """Record online asset cleanup timestamp."""
         info, _ = self._find_token_info(token)
         if info:
-            info.last_asset_clear_at = int(datetime.now().timestamp() * 1000)
+            info.last_asset_clear_at = _now_ms()
             self._schedule_save()
             return True
         return False
@@ -571,7 +566,7 @@ class TokenManager:
 
         token.status = TokenStatus.EXPIRED
         token.fail_count = max(token.fail_count, FAIL_THRESHOLD)
-        token.last_fail_at = int(datetime.now().timestamp() * 1000)
+        token.last_fail_at = _now_ms()
         if reason:
             token.last_fail_reason = str(reason)[:500]
 
@@ -589,7 +584,7 @@ class TokenManager:
         token.fail_count = 0
         token.last_fail_at = None
         token.last_fail_reason = None
-        token.last_sync_at = int(datetime.now().timestamp() * 1000)
+        token.last_sync_at = _now_ms()
         token.status = TokenStatus.COOLING if token.quota == 0 else TokenStatus.ACTIVE
 
         if save:
@@ -640,8 +635,8 @@ class TokenManager:
         Returns:
             是否成功
         """
-        raw_token = token_str.replace("sso=", "")
-        
+        raw_token = self._normalize_input_token(token_str)
+
         for pool in self.pools.values():
             token = pool.get(raw_token)
             if token:

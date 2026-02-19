@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import Any, Optional
 
-from app.core.auth import verify_api_key
+from app.core.auth import verify_app_key
 from app.core.config import config, get_config
 from app.core.storage import get_storage, LocalStorage, RedisStorage, SQLStorage
 import os
@@ -29,7 +29,6 @@ from app.services.grok.imagine_generation import (
     resolve_aspect_ratio as resolve_imagine_aspect_ratio,
 )
 from app.services.token import get_token_manager
-from app.core.auth import _load_legacy_api_keys
 
 
 router = APIRouter()
@@ -100,22 +99,14 @@ async def admin_chat_page():
 
 
 async def _verify_ws_api_key(websocket: WebSocket) -> bool:
-    api_key = str(get_config("app.api_key", "") or "").strip()
-    legacy_keys = await _load_legacy_api_keys()
-    if not api_key and not legacy_keys:
-        return True
+    app_key = str(get_config("app.app_key", "") or "").strip()
+    if not app_key:
+        return False
     token = str(websocket.query_params.get("api_key") or "").strip()
     if not token:
         return False
-    if (api_key and token == api_key) or token in legacy_keys:
-        return True
-    try:
-        await api_key_manager.init()
-        if api_key_manager.validate_key(token):
-            return True
-    except Exception as e:
-        logger.warning(f"Imagine ws api_key validation fallback failed: {e}")
-    return False
+    import hmac
+    return hmac.compare_digest(token, app_key)
 
 
 async def _collect_imagine_batch(token: str, prompt: str, aspect_ratio: str) -> list[str]:
@@ -352,45 +343,28 @@ async def admin_login_api(request: Request, body: AdminLoginBody | None = Body(d
     if not username or not password:
         raise HTTPException(status_code=400, detail="Missing username or password")
 
-    if username != admin_username or password != admin_password:
+    import hmac
+    if not (hmac.compare_digest(username, admin_username) and hmac.compare_digest(password, admin_password)):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    return {"status": "success", "api_key": await _resolve_admin_login_api_key()}
+    return {"status": "success", "api_key": admin_password}
 
 
-async def _resolve_admin_login_api_key() -> str:
-    """
-    Resolve an API key for admin pages after successful app login.
-
-    Priority:
-    1. app.api_key (global key)
-    2. first active legacy key from data/api_keys.json
-    3. empty string (means admin routes should be open when no keys configured)
-    """
-    global_key = str(get_config("app.api_key", "") or "").strip()
-    if global_key:
-        return global_key
-
-    legacy_keys = await _load_legacy_api_keys()
-    if legacy_keys:
-        return sorted(legacy_keys)[0]
-
-    return ""
-
-@router.get("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/config", dependencies=[Depends(verify_app_key)])
 async def get_config_api():
     """获取当前配置"""
     # 暴露原始配置字典
     return config._config
 
-@router.post("/api/v1/admin/config", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/config", dependencies=[Depends(verify_app_key)])
 async def update_config_api(data: dict):
     """更新配置"""
     try:
         await config.update(data)
         return {"status": "success", "message": "配置已更新"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _display_key(key: str) -> str:
@@ -555,7 +529,7 @@ def _trigger_account_settings_refresh_background(
     asyncio.create_task(_run())
 
 
-@router.get("/api/v1/admin/keys", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/keys", dependencies=[Depends(verify_app_key)])
 async def list_api_keys():
     """List API keys + daily usage/remaining (for admin UI)."""
     await api_key_manager.init()
@@ -600,7 +574,7 @@ async def list_api_keys():
     return {"success": True, "data": out}
 
 
-@router.post("/api/v1/admin/keys", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/keys", dependencies=[Depends(verify_app_key)])
 async def create_api_key(data: dict):
     """Create a new API key (optional name/key/limits)."""
     await api_key_manager.init()
@@ -629,7 +603,7 @@ async def create_api_key(data: dict):
     return {"success": True, "data": {**row, "display_key": _display_key(row.get("key", ""))}}
 
 
-@router.post("/api/v1/admin/keys/update", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/keys/update", dependencies=[Depends(verify_app_key)])
 async def update_api_key(data: dict):
     """Update name/status/limits for an API key."""
     await api_key_manager.init()
@@ -665,7 +639,7 @@ async def update_api_key(data: dict):
     return {"success": True}
 
 
-@router.post("/api/v1/admin/keys/delete", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/keys/delete", dependencies=[Depends(verify_app_key)])
 async def delete_api_key(data: dict):
     """Delete an API key."""
     await api_key_manager.init()
@@ -679,7 +653,7 @@ async def delete_api_key(data: dict):
         raise HTTPException(status_code=404, detail="Key not found")
     return {"success": True}
 
-@router.get("/api/v1/admin/storage", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/storage", dependencies=[Depends(verify_app_key)])
 async def get_storage_info():
     """获取当前存储模式"""
     storage_type = os.getenv("SERVER_STORAGE_TYPE", "local").lower()
@@ -701,7 +675,7 @@ async def get_storage_info():
                 storage_type = storage.dialect
     return {"type": storage_type or "local"}
 
-@router.get("/api/v1/admin/tokens", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/tokens", dependencies=[Depends(verify_app_key)])
 async def get_tokens_api():
     """获取所有 Token"""
     storage = get_storage()
@@ -718,7 +692,7 @@ async def get_tokens_api():
         out[str(pool_name)] = normalized
     return out
 
-@router.post("/api/v1/admin/tokens", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/tokens", dependencies=[Depends(verify_app_key)])
 async def update_tokens_api(data: dict):
     """Update token payload and trigger background account-settings refresh for new tokens."""
     storage = get_storage()
@@ -761,10 +735,11 @@ async def update_tokens_api(data: dict):
                 "retries": retries,
             },
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.post("/api/v1/admin/tokens/refresh", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/tokens/refresh", dependencies=[Depends(verify_app_key)])
 async def refresh_tokens_api(data: dict):
     """刷新 Token 状态"""
     from app.services.token.manager import get_token_manager
@@ -792,11 +767,12 @@ async def refresh_tokens_api(data: dict):
         results = dict(results_list)
             
         return {"status": "success", "results": results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/api/v1/admin/tokens/nsfw/refresh", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/tokens/nsfw/refresh", dependencies=[Depends(verify_app_key)])
 async def refresh_tokens_nsfw_api(data: dict):
     """Refresh account settings (TOS + birth date + NSFW) for selected/all tokens."""
     payload = data if isinstance(data, dict) else {}
@@ -846,7 +822,7 @@ async def refresh_tokens_nsfw_api(data: dict):
     }
 
 
-@router.post("/api/v1/admin/tokens/auto-register", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/tokens/auto-register", dependencies=[Depends(verify_app_key)])
 async def auto_register_tokens_api(data: dict):
     """Start auto registration."""
     try:
@@ -875,11 +851,12 @@ async def auto_register_tokens_api(data: dict):
         return {"status": "started", "job": job.to_dict()}
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/api/v1/admin/tokens/auto-register/status", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/tokens/auto-register/status", dependencies=[Depends(verify_app_key)])
 async def auto_register_status_api(job_id: str | None = None):
     """Get auto registration status."""
     manager = get_auto_register_manager()
@@ -889,7 +866,7 @@ async def auto_register_status_api(job_id: str | None = None):
     return status
 
 
-@router.post("/api/v1/admin/tokens/auto-register/stop", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/tokens/auto-register/stop", dependencies=[Depends(verify_app_key)])
 async def auto_register_stop_api(job_id: str | None = None):
     """Stop auto registration (best-effort)."""
     manager = get_auto_register_manager()
@@ -904,7 +881,7 @@ async def admin_cache_page():
     """缓存管理页"""
     return await render_template("cache/cache.html")
 
-@router.get("/api/v1/admin/cache", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/cache", dependencies=[Depends(verify_app_key)])
 async def get_cache_stats_api(request: Request):
     """获取缓存统计"""
     from app.services.grok.assets import DownloadService, ListService
@@ -1027,10 +1004,11 @@ async def get_cache_stats_api(request: Request):
             "online_scope": scope or "none",
             "online_details": online_details
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.post("/api/v1/admin/cache/clear", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/cache/clear", dependencies=[Depends(verify_app_key)])
 async def clear_local_cache_api(data: dict):
     """清理本地缓存"""
     from app.services.grok.assets import DownloadService
@@ -1040,10 +1018,11 @@ async def clear_local_cache_api(data: dict):
         dl_service = DownloadService()
         result = dl_service.clear(cache_type)
         return {"status": "success", "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.get("/api/v1/admin/cache/list", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/cache/list", dependencies=[Depends(verify_app_key)])
 async def list_local_cache_api(
     cache_type: str = "image",
     type_: str = Query(default=None, alias="type"),
@@ -1058,10 +1037,11 @@ async def list_local_cache_api(
         dl_service = DownloadService()
         result = dl_service.list_files(cache_type, page, page_size)
         return {"status": "success", **result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.post("/api/v1/admin/cache/item/delete", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/cache/item/delete", dependencies=[Depends(verify_app_key)])
 async def delete_local_cache_item_api(data: dict):
     """删除单个本地缓存文件"""
     from app.services.grok.assets import DownloadService
@@ -1073,10 +1053,11 @@ async def delete_local_cache_item_api(data: dict):
         dl_service = DownloadService()
         result = dl_service.delete_file(cache_type, name)
         return {"status": "success", "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.post("/api/v1/admin/cache/online/clear", dependencies=[Depends(verify_api_key)])
+@router.post("/api/v1/admin/cache/online/clear", dependencies=[Depends(verify_app_key)])
 async def clear_online_cache_api(data: dict):
     """清理在线缓存"""
     from app.services.grok.assets import DeleteService
@@ -1124,14 +1105,15 @@ async def clear_online_cache_api(data: dict):
         result = await delete_service.delete_all(token)
         await mgr.mark_asset_clear(token)
         return {"status": "success", "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if delete_service:
             await delete_service.close()
 
 
-@router.get("/api/v1/admin/metrics", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/metrics", dependencies=[Depends(verify_app_key)])
 async def get_metrics_api():
     """数据中心：聚合常用指标（token/cache/request_stats）。"""
     try:
@@ -1189,11 +1171,12 @@ async def get_metrics_api():
             },
             "request_stats": stats,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/api/v1/admin/cache/local", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/cache/local", dependencies=[Depends(verify_app_key)])
 async def get_cache_local_stats_api():
     """仅获取本地缓存统计（用于前端实时刷新）。"""
     from app.services.grok.assets import DownloadService
@@ -1203,8 +1186,9 @@ async def get_cache_local_stats_api():
         image_stats = dl_service.get_stats("image")
         video_stats = dl_service.get_stats("video")
         return {"local_image": image_stats, "local_video": video_stats}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _safe_log_file_path(name: str) -> Path:
@@ -1275,7 +1259,7 @@ def _tail_lines(path: Path, max_lines: int = 2000, max_bytes: int = 1024 * 1024)
     return [_format_log_line(ln) for ln in lines if ln is not None]
 
 
-@router.get("/api/v1/admin/logs/files", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/logs/files", dependencies=[Depends(verify_app_key)])
 async def list_log_files_api():
     """列出可查看的日志文件（logs/*.log）。"""
     from app.core.logger import LOG_DIR
@@ -1296,11 +1280,12 @@ async def list_log_files_api():
                 continue
         items.sort(key=lambda x: x["mtime_ms"], reverse=True)
         return {"files": items}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/api/v1/admin/logs/tail", dependencies=[Depends(verify_api_key)])
+@router.get("/api/v1/admin/logs/tail", dependencies=[Depends(verify_app_key)])
 async def tail_log_api(file: str | None = None, lines: int = 500):
     """读取后台日志（尾部）。"""
     from app.core.logger import LOG_DIR
@@ -1322,5 +1307,6 @@ async def tail_log_api(file: str | None = None, lines: int = 500):
         raise HTTPException(status_code=404, detail="Log file not found")
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")

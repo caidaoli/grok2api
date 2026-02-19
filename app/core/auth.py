@@ -5,6 +5,7 @@ API 认证模块
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 from pathlib import Path
 from typing import Optional, Set
@@ -111,7 +112,9 @@ async def verify_api_key(
         )
 
     token = auth.credentials
-    if (api_key and token == api_key) or token in legacy_keys:
+    if (api_key and hmac.compare_digest(token, api_key)) or any(
+        hmac.compare_digest(token, k) for k in legacy_keys
+    ):
         return token
 
     raise HTTPException(
@@ -145,7 +148,7 @@ async def verify_app_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if auth.credentials != app_key:
+    if not hmac.compare_digest(auth.credentials, app_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",

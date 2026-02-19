@@ -852,8 +852,10 @@ class DownloadService(BaseService):
     def delete_file(self, media_type: str, name: str) -> Dict[str, Any]:
         """删除单个缓存文件"""
         cache_dir = self.image_dir if media_type == "image" else self.video_dir
-        safe_name = name.replace("/", "-")
-        file_path = cache_dir / safe_name
+        base = cache_dir.resolve()
+        file_path = (cache_dir / Path(name).name).resolve()
+        if not file_path.is_relative_to(base):
+            return {"deleted": False}
         if not file_path.exists():
             return {"deleted": False}
         try:
