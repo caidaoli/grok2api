@@ -1202,10 +1202,6 @@ openAiRoutes.post("/chat/completions", async (c) => {
     const settingsBundle = await getSettings(c.env);
     const cfg = getModelInfo(requestedModel)!;
 
-    const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
-      ? settingsBundle.grok.retry_status_codes
-      : [401, 429];
-
     const stream = Boolean(body.stream);
     const maxRetry = 3;
     let lastErr: string | null = null;
@@ -1278,7 +1274,8 @@ openAiRoutes.post("/chat/completions", async (c) => {
           lastErr = `Upstream ${upstream.status}: ${txt.slice(0, 200)}`;
           await recordTokenFailure(c.env.DB, jwt, upstream.status, txt.slice(0, 200));
           await applyCooldown(c.env.DB, jwt, upstream.status);
-          if (retryCodes.includes(upstream.status) && attempt < maxRetry - 1) continue;
+          // Chat 请求只要上游非 200 就切换 token 重试，避免白名单漏掉 key 相关错误。
+          if (attempt < maxRetry - 1) continue;
           break;
         }
 
