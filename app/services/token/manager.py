@@ -30,8 +30,10 @@ class TokenManager:
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
         self._usage_sync_tasks: set[asyncio.Task] = set()
+        self._inflight_syncs: Dict[str, asyncio.Task] = {}  # 去抖：token:bucket → task
         self._save_delay = 0.5
         self._last_reload_at = 0.0
+        self._select_lock = asyncio.Lock()
     
     @classmethod
     async def get_instance(cls) -> "TokenManager":
@@ -214,13 +216,12 @@ class TokenManager:
         返回:
             (token, request_id)；若无可用 token，返回 (None, None)
         """
-        storage = get_storage()
         now_ms = _now_ms()
         ttl_ms = self._reserve_ttl_ms()
         request_id = uuid.uuid4().hex
         excluded = set(exclude or set())
 
-        async with storage.acquire_lock("token_select", timeout=10):
+        async with self._select_lock:
             await self.reload_if_stale()
 
             from app.services.grok.model import ModelService
@@ -252,12 +253,11 @@ class TokenManager:
         if not request_id:
             return False
 
-        storage = get_storage()
         raw_token = self._normalize_input_token(token_str)
         if not raw_token:
             return False
 
-        async with storage.acquire_lock("token_select", timeout=10):
+        async with self._select_lock:
             await self.reload_if_stale()
             token, _ = self._find_token_info(raw_token)
             if not token:
@@ -464,6 +464,12 @@ class TokenManager:
             if not local_ok:
                 return False
 
+            # 去抖：同一 token+bucket 只保留一个在飞行的 sync task
+            dedup_key = f"{raw_token}:{bucket}"
+            existing = self._inflight_syncs.get(dedup_key)
+            if existing and not existing.done():
+                return True
+
             task = asyncio.create_task(
                 self._sync_usage_from_api(
                     token_str=token_str,
@@ -474,6 +480,8 @@ class TokenManager:
                     retry=retry,
                 )
             )
+            self._inflight_syncs[dedup_key] = task
+            task.add_done_callback(lambda _t, k=dedup_key: self._inflight_syncs.pop(k, None))
             self._track_usage_sync_task(task)
             return True
 

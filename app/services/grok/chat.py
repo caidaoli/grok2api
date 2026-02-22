@@ -31,6 +31,28 @@ CHAT_API = "https://grok.com/rest/app-chat/conversations/new"
 TIMEOUT = 120
 BROWSER = "chrome136"
 
+# 模块级共享 HTTP 连接池
+_shared_session: AsyncSession | None = None
+
+
+def _get_shared_session() -> AsyncSession:
+    """懒初始化共享 AsyncSession，复用 TCP/TLS 连接"""
+    global _shared_session
+    if _shared_session is None:
+        _shared_session = AsyncSession(impersonate=BROWSER, max_clients=64)
+    return _shared_session
+
+
+async def close_shared_session() -> None:
+    """关闭共享 session，供应用 shutdown 时调用"""
+    global _shared_session
+    if _shared_session is not None:
+        try:
+            await _shared_session.close()
+        except Exception:
+            pass
+        _shared_session = None
+
 
 _enc = tiktoken.get_encoding("o200k_base")
 
@@ -298,8 +320,8 @@ class GrokChatService:
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         timeout = get_config("grok.timeout", TIMEOUT)
         
-        # 建立连接
-        session = AsyncSession(impersonate=BROWSER)
+        # 建立连接（复用共享连接池）
+        session = _get_shared_session()
         try:
             resp = await session.post(
                 CHAT_API,
@@ -321,10 +343,6 @@ class GrokChatService:
                     f"Chat failed: {resp.status_code}, {content}",
                     extra={"status": resp.status_code, "token": token[:10] + "..."}
                 )
-                try:
-                    await session.close()
-                except Exception:
-                    pass
                 raise UpstreamException(
                     message=f"Grok API request failed: {resp.status_code}",
                     details={"status": resp.status_code}
@@ -334,23 +352,21 @@ class GrokChatService:
             raise
         except Exception as e:
             logger.error(f"Chat request error: {e}")
-            try:
-                await session.close()
-            except Exception:
-                pass
             raise UpstreamException(
                 message=f"Chat connection failed: {str(e)}",
                 details={"error": str(e)}
             )
-        
-        # 流式传输
+
+        # 流式传输（只关闭 response，不关闭共享 session）
         async def stream_response():
             try:
                 async for line in resp.aiter_lines():
                     yield line
             finally:
-                if session:
-                    await session.close()
+                try:
+                    resp.close()
+                except Exception:
+                    pass
         
         return stream_response()
     
@@ -447,6 +463,9 @@ class ChatService:
         # 获取 token 并请求 Grok（失败时自动换 token 重试）
         token_mgr = await get_token_manager()
 
+        # prompt tokens 只依赖输入消息，与 API 调用并行计算
+        prompt_tokens_task = asyncio.create_task(_count_prompt_tokens(messages))
+
         max_retry = RetryConfig.get_max_retry()
         excluded_tokens: set[str] = set()
         token = None
@@ -490,6 +509,7 @@ class ChatService:
                     continue
                 raise
             except AppException:
+                prompt_tokens_task.cancel()
                 try:
                     await token_mgr.release_token_reservation(token, reservation_id)
                 except Exception:
@@ -501,6 +521,7 @@ class ChatService:
                 raise
 
         if token is None:
+            prompt_tokens_task.cancel()
             try:
                 await request_stats.record_request(model, success=False)
             except Exception:
@@ -513,14 +534,15 @@ class ChatService:
             )
 
         if last_error is not None:
+            prompt_tokens_task.cancel()
             try:
                 await request_stats.record_request(model, success=False)
             except Exception:
                 pass
             raise last_error
-        
+
         # 处理响应
-        prompt_tokens = await _count_prompt_tokens(messages)
+        prompt_tokens = await prompt_tokens_task
 
         if is_stream:
             processor = StreamProcessor(model_name, token, think, prompt_tokens=prompt_tokens).process(response)
@@ -570,4 +592,5 @@ __all__ = [
     "ChatRequestBuilder",
     "MessageExtractor",
     "ChatService",
+    "close_shared_session",
 ]

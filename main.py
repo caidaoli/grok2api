@@ -84,6 +84,14 @@ async def lifespan(app: FastAPI):
     # 关闭
     logger.info("Shutting down Grok2API...")
 
+    # 关闭共享 HTTP 连接池
+    try:
+        from app.services.grok.chat import close_shared_session
+
+        await close_shared_session()
+    except Exception:
+        pass
+
     # Best-effort: stop auto-register to avoid blocking shutdown on background threads.
     try:
         from app.services.register import get_auto_register_manager

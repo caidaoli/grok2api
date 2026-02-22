@@ -1,6 +1,5 @@
 """请求统计模块 - 按小时/天统计请求数据"""
 
-import time
 import asyncio
 import orjson
 from datetime import datetime
@@ -38,6 +37,12 @@ class RequestStats:
         
         self._lock = asyncio.Lock()
         self._loaded = False
+
+        # 批量刷新：内存即时更新，磁盘写入合并
+        self._dirty = False
+        self._flush_task: asyncio.Task | None = None
+        self._flush_delay = 2.0  # 秒
+
         self._initialized = True
 
     async def init(self):
@@ -125,24 +130,48 @@ class RequestStats:
         # 定期清理旧数据
         self._cleanup()
         
-        # 异步保存
-        asyncio.create_task(self._save_data())
+        # 合并写入
+        self._schedule_save()
     
     def _cleanup(self) -> None:
         """清理过期数据"""
-        now = datetime.now()
-        
         # 清理小时数据
         hour_keys = list(self._hourly.keys())
         if len(hour_keys) > self._hourly_keep:
             for key in sorted(hour_keys)[:-self._hourly_keep]:
                 del self._hourly[key]
-        
+
         # 清理天数据
         day_keys = list(self._daily.keys())
         if len(day_keys) > self._daily_keep:
             for key in sorted(day_keys)[:-self._daily_keep]:
                 del self._daily[key]
+
+    def _schedule_save(self):
+        """合并高频保存请求，通过 flush loop 批量写入磁盘"""
+        self._dirty = True
+        if self._flush_task and not self._flush_task.done():
+            return
+        self._flush_task = asyncio.create_task(self._flush_loop())
+
+    async def _flush_loop(self):
+        """延迟合并写入循环"""
+        try:
+            while True:
+                await asyncio.sleep(self._flush_delay)
+                if not self._dirty:
+                    break
+                self._dirty = False
+                await self._save_data()
+        finally:
+            self._flush_task = None
+            if self._dirty:
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    pass
+                else:
+                    self._schedule_save()
     
     def get_stats(self, hours: int = 24, days: int = 7) -> Dict[str, Any]:
         """获取统计数据"""

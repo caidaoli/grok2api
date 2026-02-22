@@ -1,6 +1,7 @@
 """
 OpenAI 响应格式处理器
 """
+import asyncio
 import time
 import uuid
 import random
@@ -24,6 +25,13 @@ def _count_tokens(text: str) -> int:
     if not text:
         return 0
     return len(_enc.encode(text))
+
+
+async def _count_tokens_async(text: str) -> int:
+    """Count tokens in a thread pool to avoid blocking the event loop on long text."""
+    if not text:
+        return 0
+    return await asyncio.to_thread(_count_tokens, text)
 
 
 def _build_video_poster_preview(video_url: str, thumbnail_url: str = "") -> str:
@@ -223,7 +231,7 @@ class StreamProcessor(BaseProcessor):
                 yield _emit("</think>\n")
             yield self._sse(finish="stop")
             # Batch-count completion tokens once (much cheaper than per-token encoding)
-            self._completion_tokens = _count_tokens(self._raw_completion_text)
+            self._completion_tokens = await _count_tokens_async(self._raw_completion_text)
             # usage chunk (OpenAI spec: separate chunk with choices=[] before [DONE])
             completion_tokens = self._completion_tokens
             total = self.prompt_tokens + completion_tokens
@@ -305,7 +313,7 @@ class CollectProcessor(BaseProcessor):
         finally:
             await self.close()
         
-        completion_tokens = _count_tokens(content)
+        completion_tokens = await _count_tokens_async(content)
         total = self.prompt_tokens + completion_tokens
 
         return {
