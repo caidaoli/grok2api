@@ -6,7 +6,11 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply DB --remote",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "deno:dev": "deno task dev",
+    "deno:test": "deno task test",
+    "deno:check": "deno task check",
+    "deno:deploy:prod": "deployctl deploy --project=grok2api-deno --entrypoint=main.ts --include=main.ts --include=deno/ --include=deno.json --include=deno.lock --include=src/utils/ --include=src/grok/models.ts --include=app/static/ --prod"
   },
   "dependencies": {
     "hono": "^4.6.16",
