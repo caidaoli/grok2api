@@ -7,24 +7,20 @@ import uuid
 import random
 import html
 import orjson
-import tiktoken
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List
 
 from app.core.config import get_config
 from app.core.logger import logger
 from app.services.grok.assets import DownloadService
+from app.services.grok.tokenizer import count_text_tokens
 
 
 ASSET_URL = "https://assets.grok.com/"
 
-_enc = tiktoken.get_encoding("o200k_base")
-
 
 def _count_tokens(text: str) -> int:
-    """Count tokens using tiktoken (o200k_base encoding)."""
-    if not text:
-        return 0
-    return len(_enc.encode(text))
+    """Count tokens, falling back to an estimate when tiktoken is unavailable."""
+    return count_text_tokens(text)
 
 
 async def _count_tokens_async(text: str) -> int:

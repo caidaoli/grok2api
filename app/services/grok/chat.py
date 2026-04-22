@@ -4,7 +4,6 @@ Grok Chat 服务
 
 import asyncio
 import orjson
-import tiktoken
 from typing import Dict, List, Any
 from dataclasses import dataclass
 
@@ -23,6 +22,7 @@ from app.services.grok.model import ModelService
 from app.services.grok.assets import UploadService
 from app.services.grok.processor import StreamProcessor, CollectProcessor
 from app.services.grok.retry import RetryConfig
+from app.services.grok.tokenizer import count_text_tokens, get_encoder
 from app.services.token import get_token_manager
 from app.services.request_stats import request_stats
 
@@ -54,7 +54,6 @@ async def close_shared_session() -> None:
         _shared_session = None
 
 
-_enc = tiktoken.get_encoding("o200k_base")
 _BATCH_ENCODE_MIN_PARTS = 32
 _BATCH_ENCODE_MIN_TOTAL_CHARS = 20000
 _BATCH_ENCODE_MIN_AVG_CHARS = 400
@@ -100,7 +99,7 @@ def _prompt_token_batch_config() -> tuple[int, int, int, int]:
 
 
 async def _count_prompt_tokens(messages: List[Dict[str, Any]]) -> int:
-    """Count prompt tokens from OpenAI messages using tiktoken (o200k_base).
+    """Count prompt tokens using tiktoken when available.
 
     BPE encoding is CPU-intensive, so the actual work runs in a thread pool
     to avoid blocking the asyncio event loop on large prompts.
@@ -134,20 +133,22 @@ async def _count_prompt_tokens(messages: List[Dict[str, Any]]) -> int:
                     and avg_chars >= min_avg_chars
                 )
             if use_batch:
-                try:
-                    total += sum(
-                        len(tokens)
-                        for tokens in _enc.encode_batch(
-                            text_parts,
-                            num_threads=threads,
+                enc = get_encoder()
+                if enc is not None:
+                    try:
+                        total += sum(
+                            len(tokens)
+                            for tokens in enc.encode_batch(
+                                text_parts,
+                                num_threads=threads,
+                            )
                         )
-                    )
-                    return total
-                except Exception:
-                    # Fallback for non-standard encoder implementations used in tests/mocks.
-                    pass
+                        return total
+                    except Exception:
+                        # Fallback for non-standard encoder implementations used in tests/mocks.
+                        pass
 
-            total += sum(len(_enc.encode(text)) for text in text_parts)
+            total += sum(count_text_tokens(text) for text in text_parts)
         return total
     return await asyncio.to_thread(_encode)
 

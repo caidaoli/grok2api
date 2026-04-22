@@ -1,6 +1,7 @@
 import asyncio
 
 from app.services.grok import chat as chat_mod
+from app.services.grok import tokenizer as tokenizer_mod
 
 
 def test_count_prompt_tokens_should_use_batch_encoding_for_large_fragmented_input(monkeypatch):
@@ -21,7 +22,8 @@ def test_count_prompt_tokens_should_use_batch_encoding_for_large_fragmented_inpu
 
     async def _run():
         fake = _FakeEncoding()
-        monkeypatch.setattr(chat_mod, "_enc", fake)
+        monkeypatch.setattr(tokenizer_mod, "_encoder", fake)
+        monkeypatch.setattr(tokenizer_mod, "_encoder_failed", False)
 
         messages = [
             {"role": "user", "content": "u" * 5000},
@@ -59,7 +61,8 @@ def test_count_prompt_tokens_should_use_encode_for_small_input(monkeypatch):
 
     async def _run():
         fake = _FakeEncoding()
-        monkeypatch.setattr(chat_mod, "_enc", fake)
+        monkeypatch.setattr(tokenizer_mod, "_encoder", fake)
+        monkeypatch.setattr(tokenizer_mod, "_encoder_failed", False)
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -91,7 +94,8 @@ def test_count_prompt_tokens_should_respect_config_thresholds(monkeypatch):
 
     async def _run():
         fake = _FakeEncoding()
-        monkeypatch.setattr(chat_mod, "_enc", fake)
+        monkeypatch.setattr(tokenizer_mod, "_encoder", fake)
+        monkeypatch.setattr(tokenizer_mod, "_encoder_failed", False)
 
         config_map = {
             "performance.prompt_token_batch_min_parts": 1,
