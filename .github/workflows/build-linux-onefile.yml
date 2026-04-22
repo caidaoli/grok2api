@@ -1,0 +1,91 @@
+name: Build Linux Onefile
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的 Git tag，例如 v0.7.3"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-amd64:
+    name: Build Linux amd64 onefile
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate and checkout target tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ github.event.inputs.tag }}"
+          if [ -z "$tag" ]; then
+            echo "workflow_dispatch input 'tag' is required" >&2
+            exit 1
+          fi
+
+          git fetch --force --tags origin
+
+          if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag '${tag}' does not exist on origin" >&2
+            exit 1
+          fi
+
+          git switch --detach "refs/tags/${tag}"
+
+          echo "RELEASE_TAG=${tag}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=grok2api-linux-amd64-${tag}" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: "x64"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+
+      - name: Install Python dependencies
+        run: |
+          uv sync --frozen --no-dev --no-install-project
+          uv pip install --python .venv/bin/python nuitka
+
+      - name: Build onefile binary with Nuitka
+        shell: bash
+        run: |
+          set -euo pipefail
+          . .venv/bin/activate
+
+          python -m nuitka \
+            --onefile \
+            --assume-yes-for-downloads \
+            --output-dir=build \
+            --output-filename="${ARTIFACT_NAME}" \
+            --include-data-dir=app/static=app/static \
+            --include-data-file=config.defaults.toml=config.defaults.toml \
+            main.py
+
+      - name: Upload binary to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: build/${{ env.ARTIFACT_NAME }}
