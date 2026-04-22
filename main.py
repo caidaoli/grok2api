@@ -239,7 +239,7 @@ if __name__ == "__main__":
         workers = 1
 
     uvicorn.run(
-        "main:app",
+        app,
         host=host,
         port=port,
         workers=workers,

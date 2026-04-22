@@ -80,6 +80,7 @@ jobs:
             --output-filename="${ARTIFACT_NAME}" \
             --include-data-dir=app/static=app/static \
             --include-data-file=config.defaults.toml=config.defaults.toml \
+            --include-module=main \
             main.py
 
       - name: Upload binary to GitHub Release
