@@ -22,9 +22,13 @@ class _DummyStorage:
 class _DummyTokenManager:
     def __init__(self):
         self.reload_calls = 0
+        self.cancel_pending_save_calls = 0
 
     async def reload(self):
         self.reload_calls += 1
+
+    async def cancel_pending_save(self):
+        self.cancel_pending_save_calls += 1
 
 
 def test_update_tokens_api_triggers_background_for_new_tokens(monkeypatch):
@@ -60,6 +64,7 @@ def test_update_tokens_api_triggers_background_for_new_tokens(monkeypatch):
     assert captured["tokens"] == ["token-b"]
     assert captured["concurrency"] == 10
     assert captured["retries"] == 3
+    assert mgr.cancel_pending_save_calls == 1
     assert mgr.reload_calls == 1
 
 
@@ -90,4 +95,5 @@ def test_update_tokens_api_does_not_trigger_when_no_new_tokens(monkeypatch):
     assert captured["tokens"] == []
     assert captured["concurrency"] == 10
     assert captured["retries"] == 3
+    assert mgr.cancel_pending_save_calls == 1
     assert mgr.reload_calls == 1
