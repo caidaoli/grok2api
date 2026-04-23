@@ -153,6 +153,53 @@ async def _count_prompt_tokens(messages: List[Dict[str, Any]]) -> int:
     return await asyncio.to_thread(_encode)
 
 
+def _has_assistant_output(result: Dict[str, Any]) -> bool:
+    """Only treat non-stream completions as success when assistant output is materially present."""
+    if not isinstance(result, dict):
+        return False
+
+    choices = result.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        return False
+
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        return False
+
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return True
+
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                return True
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    return True
+                if item.get("type") not in {None, "", "text"}:
+                    return True
+
+    refusal = message.get("refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        return True
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        return True
+
+    function_call = message.get("function_call")
+    if isinstance(function_call, dict) and function_call:
+        return True
+
+    return False
+
+
 @dataclass
 class ChatRequest:
     """聊天请求数据"""
@@ -547,6 +594,9 @@ class ChatService:
         token = None
         reservation_id = None
         last_error = None
+        result = None
+        model_name = model
+        response = None
 
         service = GrokChatService()
 
@@ -561,6 +611,19 @@ class ChatService:
 
             try:
                 response, _, model_name = await service.chat_openai(token, chat_request)
+
+                if not is_stream:
+                    prompt_tokens = await prompt_tokens_task
+                    result = await CollectProcessor(model_name, token, prompt_tokens=prompt_tokens).process(response)
+                    if not _has_assistant_output(result):
+                        raise UpstreamException(
+                            message="Grok API returned empty assistant content",
+                            details={
+                                "status": 200,
+                                "retryable": True,
+                                "reason": "empty_assistant_content",
+                            },
+                        )
                 last_error = None
                 break
             except UpstreamException as e:
@@ -569,17 +632,20 @@ class ChatService:
                 except Exception:
                     pass
                 status = e.details.get("status") if e.details else None
+                retryable = bool(e.details.get("retryable")) if isinstance(e.details, dict) else False
+                reason = e.details.get("reason") if isinstance(e.details, dict) else None
                 await token_mgr.record_fail(token, status or 0, str(e))
                 last_error = e
 
-                # 对 chat 请求，只要上游返回非 200，就切换 token 重试。
-                # 不再受 retry_status_codes 白名单限制，避免 5xx 直接失败。
-                if isinstance(status, int) and status != 200 and attempt < max_retry:
+                # 对 chat 请求，只要上游返回非 200，或 200 但响应语义无效，都切换 token 重试。
+                # 不再受 retry_status_codes 白名单限制，避免 5xx 和空响应直接失败。
+                if attempt < max_retry and (retryable or (isinstance(status, int) and status != 200)):
                     excluded_tokens.add(token)
                     delay = 0.5 * (attempt + 1)
+                    reason_suffix = f" ({reason})" if reason else ""
                     logger.warning(
-                        "Retry {}/{}: token {} got {}, switching token in {}s",
-                        attempt + 1, max_retry, token, status, delay
+                        "Retry {}/{}: token {} got {}{}, switching token in {}s",
+                        attempt + 1, max_retry, token, status, reason_suffix, delay
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -648,7 +714,8 @@ class ChatService:
             return _wrapped_stream()
 
         try:
-            result = await CollectProcessor(model_name, token, prompt_tokens=prompt_tokens).process(response)
+            if result is None:
+                raise UpstreamException("Grok API returned empty assistant content", details={"status": 200})
             try:
                 await token_mgr.sync_usage(token, model_name, consume_on_fail=True, is_usage=True)
                 await request_stats.record_request(model_name, success=True)
