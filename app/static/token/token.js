@@ -752,9 +752,14 @@ async function saveEdit() {
 async function deleteToken(index) {
   const ok = await confirmAction('确定要删除此 Token 吗？', { okText: '删除' });
   if (!ok) return;
-  flatTokens.splice(index, 1);
+  const item = flatTokens[index];
+  if (!item) return;
+  const payload = await deleteTokensFromServer([item.token]);
+  if (!payload) return;
+  const tokenKey = normalizeSsoToken(item.token);
+  flatTokens = flatTokens.filter(t => normalizeSsoToken(t.token) !== tokenKey);
   applyFilters();
-  syncToServer().then(loadData);
+  loadData();
 }
 
 function batchDelete() {
@@ -799,6 +804,33 @@ async function syncToServer() {
     return payload;
   } catch (e) {
     showToast('保存错误: ' + e.message, 'error');
+    return null;
+  }
+}
+
+async function deleteTokensFromServer(tokens) {
+  const normalized = Array.from(new Set(
+    (tokens || []).map(t => normalizeSsoToken(t)).filter(t => t)
+  ));
+  if (normalized.length === 0) return { status: 'success', deleted: 0 };
+
+  try {
+    const res = await fetch('/api/v1/admin/tokens/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(apiKey)
+      },
+      body: JSON.stringify({ tokens: normalized })
+    });
+    const payload = await parseJsonSafely(res);
+    if (!res.ok) {
+      showToast(extractApiErrorMessage(payload, '删除失败'), 'error');
+      return null;
+    }
+    return payload || { status: 'success', deleted: 0 };
+  } catch (e) {
+    showToast('删除错误: ' + e.message, 'error');
     return null;
   }
 }
@@ -1176,15 +1208,16 @@ async function startBatchDelete() {
   setActionButtonsState();
 
   const toRemove = new Set(selected.map(t => normalizeSsoToken(t.token)));
+
+  const payload = await deleteTokensFromServer(Array.from(toRemove));
+  if (!payload) {
+    finishBatchProcess(true);
+    return;
+  }
+
   flatTokens = flatTokens.filter(t => !toRemove.has(normalizeSsoToken(t.token)));
   applyFilters();
-
-  try {
-    await syncToServer();
-    batchProcessed = batchTotal;
-  } catch (e) {
-    showToast('删除失败', 'error');
-  }
+  batchProcessed = batchTotal;
   finishBatchProcess();
 }
 

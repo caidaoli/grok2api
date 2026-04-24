@@ -114,6 +114,25 @@ def _collect_tokens_from_pool_payload(payload: Any) -> list[str]:
     return collected
 
 
+def _collect_tokens_from_delete_payload(payload: Any) -> list[str]:
+    candidates: list[str] = []
+    if isinstance(payload, dict):
+        if isinstance(payload.get("token"), str):
+            candidates.append(payload["token"])
+        if isinstance(payload.get("tokens"), list):
+            candidates.extend(item for item in payload["tokens"] if isinstance(item, str))
+
+    collected: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        token = normalize_refresh_token(str(raw or "").strip())
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        collected.append(token)
+    return collected
+
+
 def _resolve_nsfw_refresh_concurrency(override: Any = None) -> int:
     source = override if override is not None else get_config("token.nsfw_refresh_concurrency", 10)
     try:
@@ -229,6 +248,32 @@ async def update_tokens_api(data: dict):
         }
     except Exception:
         logger.exception("Admin API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/api/v1/admin/tokens/delete", dependencies=[Depends(verify_app_key)])
+async def delete_tokens_api(data: dict):
+    """Delete selected tokens without rewriting the full token set."""
+    tokens = _collect_tokens_from_delete_payload(data)
+    if not tokens:
+        raise HTTPException(status_code=400, detail="No tokens provided")
+
+    storage = get_storage()
+    try:
+        mgr = await get_token_manager()
+
+        # Prevent a delayed full save from resurrecting rows after targeted delete.
+        await mgr.cancel_pending_save()
+
+        async with storage.acquire_lock("tokens_save", timeout=30):
+            deleted = await storage.delete_tokens(tokens)
+            await mgr.reload()
+
+        return {"status": "success", "deleted": deleted}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Admin token delete API error")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -351,5 +396,4 @@ async def refresh_tokens_nsfw_api(data: dict):
         "summary": result.get("summary") or {},
         "failed": result.get("failed") or [],
     }
-
 

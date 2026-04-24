@@ -67,6 +67,48 @@ class BaseStorage(abc.ABC):
         """保存所有 Token"""
         pass
 
+    @staticmethod
+    def _normalize_token_key(token: Any) -> str:
+        raw = str(token or "").strip()
+        if raw.startswith("sso="):
+            raw = raw[4:].strip()
+        return raw
+
+    async def delete_tokens(self, tokens: list[str]) -> int:
+        """删除指定 Token；后端未覆盖时退化为 load-filter-save。"""
+        wanted: set[str] = set()
+        for token in tokens or []:
+            normalized = self._normalize_token_key(token)
+            if normalized:
+                wanted.add(normalized)
+        if not wanted:
+            return 0
+
+        data = await self.load_tokens()
+        if not isinstance(data, dict):
+            return 0
+
+        deleted = 0
+        next_data: dict[str, list[Any]] = {}
+        for pool_name, items in data.items():
+            if not isinstance(items, list):
+                next_data[pool_name] = []
+                continue
+
+            kept: list[Any] = []
+            for item in items:
+                token_raw = item if isinstance(item, str) else (item.get("token") if isinstance(item, dict) else "")
+                token_key = self._normalize_token_key(token_raw)
+                if token_key and token_key in wanted:
+                    deleted += 1
+                    continue
+                kept.append(item)
+            next_data[pool_name] = kept
+
+        if deleted:
+            await self.save_tokens(next_data)
+        return deleted
+
     @abc.abstractmethod
     async def close(self):
         """关闭资源"""
@@ -316,7 +358,7 @@ class RedisStorage(BaseStorage):
         """加载所有 Token"""
         try:
             pool_names = await self.redis.smembers(self.key_pools)
-            if not pool_names: return None
+            if not pool_names: return {}
             
             pools = {}
             async with self.redis.pipeline() as pipe:
@@ -447,6 +489,31 @@ class RedisStorage(BaseStorage):
                 
         except Exception as e:
             logger.error(f"RedisStorage: 保存 Token 失败: {e}")
+            raise
+
+    async def delete_tokens(self, tokens: list[str]) -> int:
+        """定向删除 Token，避免 Redis 后端全量重写。"""
+        token_ids = list(dict.fromkeys(
+            token for token in (self._normalize_token_key(t) for t in (tokens or [])) if token
+        ))
+        if not token_ids:
+            return 0
+
+        try:
+            pool_names = await self.redis.smembers(self.key_pools)
+            pool_names = list(pool_names or [])
+
+            async with self.redis.pipeline() as pipe:
+                for token in token_ids:
+                    pipe.delete(f"{self.prefix_token_hash}{token}")
+                for pool_name in pool_names:
+                    pipe.srem(f"{self.prefix_pool_set}{pool_name}", *token_ids)
+                results = await pipe.execute()
+
+            deleted_hashes = results[:len(token_ids)]
+            return sum(int(v or 0) for v in deleted_hashes)
+        except Exception as e:
+            logger.error(f"RedisStorage: 删除 Token 失败: {e}")
             raise
 
     async def close(self):
@@ -696,7 +763,7 @@ class SQLStorage(BaseStorage):
             async with self.async_session() as session:
                 res = await session.execute(text("SELECT pool_name, data FROM tokens"))
                 rows = res.fetchall()
-                if not rows: return None
+                if not rows: return {}
                 
                 pools = {}
                 for pool_name, data_json in rows:
@@ -770,6 +837,38 @@ class SQLStorage(BaseStorage):
                 await session.commit()
         except Exception as e:
             logger.error(f"SQLStorage: 保存 Token 失败: {e}")
+            raise
+
+    async def delete_tokens(self, tokens: list[str]) -> int:
+        """定向删除 Token，避免 MySQL/PgSQL 保存全量 token 集。"""
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        token_keys = list(dict.fromkeys(
+            token for token in (self._normalize_token_key(t) for t in (tokens or [])) if token
+        ))
+        if not token_keys:
+            return 0
+
+        deleted = 0
+        chunk_size = 500
+        try:
+            async with self.async_session() as session:
+                for start in range(0, len(token_keys), chunk_size):
+                    chunk = token_keys[start:start + chunk_size]
+                    params = {f"t{i}": token for i, token in enumerate(chunk)}
+                    placeholders = ", ".join(f":{name}" for name in params)
+                    result = await session.execute(
+                        text(f"DELETE FROM tokens WHERE token IN ({placeholders})"),
+                        params,
+                    )
+                    rowcount = getattr(result, "rowcount", 0)
+                    if isinstance(rowcount, int) and rowcount > 0:
+                        deleted += rowcount
+                await session.commit()
+            return deleted
+        except Exception as e:
+            logger.error(f"SQLStorage: 删除 Token 失败: {e}")
             raise
 
     async def close(self):

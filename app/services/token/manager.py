@@ -80,8 +80,9 @@ class TokenManager:
                 storage = get_storage()
                 data = await storage.load_tokens()
                 
-                # 如果后端返回 None 或空数据，尝试从本地 data/token.json 初始化后端
-                if not data:
+                # None means load failure/unknown state. An empty dict is a valid
+                # remote state and must not be repopulated after deleting all tokens.
+                if data is None:
                     from app.core.storage import LocalStorage
                     local_storage = LocalStorage()
                     local_data = await local_storage.load_tokens()
@@ -91,6 +92,8 @@ class TokenManager:
                         logger.info(f"Initialized remote token storage ({storage.__class__.__name__}) with local tokens.")
                     else:
                         data = {}
+                elif not isinstance(data, dict):
+                    data = {}
 
                 self.pools = {}
                 for pool_name, tokens in data.items():
