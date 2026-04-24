@@ -200,6 +200,42 @@ def _has_assistant_output(result: Dict[str, Any]) -> bool:
     return False
 
 
+def _stream_chunk_has_assistant_output(chunk: str) -> bool:
+    """Return True only when an SSE chat chunk contains user-visible output."""
+    if not isinstance(chunk, str) or not chunk.startswith("data:"):
+        return False
+
+    payload = chunk[len("data:"):].strip()
+    if not payload or payload == "[DONE]":
+        return False
+
+    try:
+        data = orjson.loads(payload)
+    except orjson.JSONDecodeError:
+        return False
+
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return False
+
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+
+        content = delta.get("content")
+        if isinstance(content, str) and content.strip():
+            return True
+        if isinstance(content, list) and content:
+            return True
+        if delta.get("tool_calls") or delta.get("function_call"):
+            return True
+
+    return False
+
+
 @dataclass
 class ChatRequest:
     """聊天请求数据"""
@@ -599,6 +635,144 @@ class ChatService:
         response = None
 
         service = GrokChatService()
+
+        if is_stream:
+            async def _stream_with_retries():
+                prompt_tokens = await prompt_tokens_task
+                excluded_tokens: set[str] = set()
+                last_error = None
+                token = None
+                reservation_id = None
+
+                for attempt in range(max_retry + 1):
+                    token, reservation_id = await token_mgr.reserve_token_for_model(
+                        model,
+                        exclude=excluded_tokens,
+                    )
+                    if not token:
+                        break
+
+                    emitted_output = False
+                    completed_success = False
+                    reservation_released = False
+                    model_name = model
+
+                    try:
+                        response, _, model_name = await service.chat_openai(token, chat_request)
+                        processor = StreamProcessor(model_name, token, think, prompt_tokens=prompt_tokens).process(response)
+                        buffered_chunks: list[str] = []
+
+                        try:
+                            async for chunk in processor:
+                                if emitted_output:
+                                    yield chunk
+                                    continue
+
+                                buffered_chunks.append(chunk)
+                                if _stream_chunk_has_assistant_output(chunk):
+                                    emitted_output = True
+                                    for buffered in buffered_chunks:
+                                        yield buffered
+                                    buffered_chunks.clear()
+
+                            if not emitted_output:
+                                raise UpstreamException(
+                                    message="Grok API returned empty assistant content",
+                                    details={
+                                        "status": 200,
+                                        "retryable": True,
+                                        "reason": "empty_assistant_content",
+                                    },
+                                )
+
+                            try:
+                                await token_mgr.sync_usage(token, model_name, consume_on_fail=True, is_usage=True)
+                                await request_stats.record_request(model_name, success=True)
+                            except Exception:
+                                pass
+                            completed_success = True
+                            return
+                        finally:
+                            if emitted_output and not completed_success:
+                                try:
+                                    await request_stats.record_request(model_name, success=False)
+                                except Exception:
+                                    pass
+                            try:
+                                await token_mgr.release_token_reservation(token, reservation_id)
+                                reservation_released = True
+                            except Exception:
+                                pass
+                    except UpstreamException as e:
+                        if not reservation_released:
+                            try:
+                                await token_mgr.release_token_reservation(token, reservation_id)
+                                reservation_released = True
+                            except Exception:
+                                pass
+                        if emitted_output:
+                            raise
+
+                        status = e.details.get("status") if e.details else None
+                        retryable = bool(e.details.get("retryable")) if isinstance(e.details, dict) else False
+                        reason = e.details.get("reason") if isinstance(e.details, dict) else None
+                        await token_mgr.record_fail(token, status or 0, str(e))
+                        last_error = e
+
+                        if attempt < max_retry and (retryable or (isinstance(status, int) and status != 200)):
+                            excluded_tokens.add(token)
+                            delay = 0.5 * (attempt + 1)
+                            reason_suffix = f" ({reason})" if reason else ""
+                            logger.warning(
+                                "Retry {}/{}: token {} got {}{}, switching token in {}s",
+                                attempt + 1, max_retry, token, status, reason_suffix, delay
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        raise
+                    except AppException:
+                        if not reservation_released:
+                            try:
+                                await token_mgr.release_token_reservation(token, reservation_id)
+                            except Exception:
+                                pass
+                        try:
+                            await request_stats.record_request(model, success=False)
+                        except Exception:
+                            pass
+                        raise
+                    except Exception:
+                        if not reservation_released:
+                            try:
+                                await token_mgr.release_token_reservation(token, reservation_id)
+                            except Exception:
+                                pass
+                        try:
+                            await request_stats.record_request(model, success=False)
+                        except Exception:
+                            pass
+                        raise
+
+                if token is None:
+                    try:
+                        await request_stats.record_request(model, success=False)
+                    except Exception:
+                        pass
+                    raise AppException(
+                        message="No available tokens. Please try again later.",
+                        error_type=ErrorType.RATE_LIMIT.value,
+                        code="rate_limit_exceeded",
+                        status_code=429
+                    )
+
+                if last_error is not None:
+                    try:
+                        await request_stats.record_request(model, success=False)
+                    except Exception:
+                        pass
+                    raise last_error
+
+            return _stream_with_retries()
 
         for attempt in range(max_retry + 1):
             # 选择并预占 token（排除已失败的）

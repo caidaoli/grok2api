@@ -147,3 +147,68 @@ def test_empty_assistant_content_should_retry_with_next_token(monkeypatch):
         assert record_calls == [("grok-3", True)]
 
     asyncio.run(_run())
+
+
+def test_empty_stream_should_retry_with_next_token_before_emitting_stop(monkeypatch):
+    async def _run():
+        mgr = _DummyTokenManager()
+        sleep_calls = []
+        record_calls = []
+        attempts = []
+
+        async def _fake_get_token_manager():
+            return mgr
+
+        async def _fake_chat_openai(self, token, request):
+            attempts.append(token)
+
+            async def _response():
+                if token == "token-a-long-1234567890":
+                    yield b'{"result":{"response":{"modelResponse":{"message":"","generatedImageUrls":[]}}}}'
+                else:
+                    yield b'{"result":{"response":{"token":"ok"}}}'
+
+            return _response(), True, request.model
+
+        async def _fake_sleep(delay):
+            sleep_calls.append(delay)
+
+        async def _fake_record_request(model, success):
+            record_calls.append((model, success))
+
+        monkeypatch.setattr(chat_mod, "get_token_manager", _fake_get_token_manager)
+        monkeypatch.setattr(chat_mod.RetryConfig, "get_max_retry", staticmethod(lambda: 1))
+        monkeypatch.setattr(chat_mod.GrokChatService, "chat_openai", _fake_chat_openai)
+        monkeypatch.setattr(chat_mod.asyncio, "sleep", _fake_sleep)
+        monkeypatch.setattr(chat_mod.request_stats, "record_request", _fake_record_request)
+
+        stream = await chat_mod.ChatService.completions(
+            model="grok-3",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+        )
+
+        chunks = []
+        async for chunk in stream:
+            chunks.append(chunk)
+
+        assert any('"content":"ok"' in chunk for chunk in chunks)
+        assert attempts == [
+            "token-a-long-1234567890",
+            "token-b-long-0987654321",
+        ]
+        assert mgr.select_calls == [
+            ("grok-3", ()),
+            ("grok-3", ("token-a-long-1234567890",)),
+        ]
+        assert [item[:2] for item in mgr.fail_calls] == [
+            ("token-a-long-1234567890", 200),
+        ]
+        assert [item[0] for item in mgr.release_calls] == [
+            "token-a-long-1234567890",
+            "token-b-long-0987654321",
+        ]
+        assert sleep_calls == [0.5]
+        assert record_calls == [("grok-3", True)]
+
+    asyncio.run(_run())
