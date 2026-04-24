@@ -68,3 +68,4 @@ config.local.toml
 .ace-tool/
 CLAUDE.md
 .serena
+.qoder
