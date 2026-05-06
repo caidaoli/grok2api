@@ -2,7 +2,7 @@
 Chat Completions API 路由
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, AsyncIterable, AsyncIterator, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -20,6 +20,8 @@ router = APIRouter(tags=["Chat"])
 
 VALID_ROLES = ["developer", "system", "user", "assistant"]
 USER_CONTENT_TYPES = ["text", "image_url", "input_audio", "file"]
+THINKING_TRUE_VALUES = {"enabled", "true", "1", "yes", "on"}
+THINKING_FALSE_VALUES = {"disabled", "false", "0", "no", "off"}
 
 
 class MessageItem(BaseModel):
@@ -99,7 +101,7 @@ class ChatCompletionRequest(BaseModel):
     model: str = Field(..., description="模型名称")
     messages: List[MessageItem] = Field(..., description="消息数组")
     stream: Optional[bool] = Field(False, description="是否流式输出")
-    thinking: Optional[str] = Field(None, description="思考模式: enabled/disabled/None")
+    thinking: Optional[Union[bool, str]] = Field(None, description="思考模式: enabled/disabled/true/false")
     
     # 视频生成配置
     video_config: Optional[VideoConfig] = Field(None, description="视频生成参数")
@@ -202,6 +204,49 @@ def validate_request(request: ChatCompletionRequest):
                         )
 
 
+def normalize_thinking_value(value: Optional[Union[bool, str]]) -> Optional[str]:
+    """Normalize common thinking aliases to the canonical enabled/disabled form."""
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return "enabled" if value else "disabled"
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in THINKING_TRUE_VALUES:
+            return "enabled"
+        if normalized in THINKING_FALSE_VALUES:
+            return "disabled"
+
+    allowed = sorted(THINKING_TRUE_VALUES | THINKING_FALSE_VALUES)
+    raise ValidationException(
+        message=f"thinking must be one of {allowed}",
+        param="thinking",
+        code="invalid_thinking",
+    )
+
+
+async def _empty_stream() -> AsyncIterator[str]:
+    if False:
+        yield ""
+
+
+async def _stream_with_first(first: str, rest: AsyncIterator[str]) -> AsyncIterator[str]:
+    yield first
+    async for chunk in rest:
+        yield chunk
+
+
+async def _prime_stream(stream: AsyncIterable[str]) -> AsyncIterator[str]:
+    iterator = stream.__aiter__()
+    try:
+        first = await anext(iterator)
+    except StopAsyncIteration:
+        return _empty_stream()
+    return _stream_with_first(first, iterator)
+
+
 @router.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, api_key: Optional[str] = Depends(verify_api_key)):
     """Chat Completions API - 兼容 OpenAI"""
@@ -211,6 +256,8 @@ async def chat_completions(request: ChatCompletionRequest, api_key: Optional[str
 
     # Daily quota (best-effort)
     await enforce_daily_quota(api_key, request.model)
+
+    normalized_thinking = normalize_thinking_value(request.thinking)
     
     # 兼容 OpenAI：仅在显式 true 时走流式，缺省/null 一律按非流式处理
     is_stream = request.stream is True
@@ -227,7 +274,7 @@ async def chat_completions(request: ChatCompletionRequest, api_key: Optional[str
             model=request.model,
             messages=[msg.model_dump() for msg in request.messages],
             stream=is_stream,
-            thinking=request.thinking,
+            thinking=normalized_thinking,
             aspect_ratio=v_conf.aspect_ratio,
             video_length=v_conf.video_length,
             resolution=v_conf.resolution,
@@ -238,14 +285,15 @@ async def chat_completions(request: ChatCompletionRequest, api_key: Optional[str
             model=request.model,
             messages=[msg.model_dump() for msg in request.messages],
             stream=is_stream,
-            thinking=request.thinking
+            thinking=normalized_thinking
         )
     
     if isinstance(result, dict):
         return JSONResponse(content=result)
     else:
+        stream = await _prime_stream(result)
         return StreamingResponse(
-            result,
+            stream,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
         )

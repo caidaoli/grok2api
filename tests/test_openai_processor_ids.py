@@ -116,3 +116,77 @@ def test_stream_processor_first_chunk_contains_content_from_upstream(monkeypatch
     first = next(x for x in parsed if isinstance(x, dict) and x.get("choices"))
     delta = first["choices"][0]["delta"]
     assert delta.get("content") == "Hello"
+
+
+def test_stream_processor_does_not_emit_thinking_tokens_when_disabled(monkeypatch):
+    monkeypatch.setattr(processor_mod, "get_config", _fake_get_config)
+
+    proc = processor_mod.StreamProcessor(
+        model="grok-4-mini-thinking-tahoe",
+        token="test-token",
+        think=False,
+        prompt_tokens=0,
+    )
+
+    upstream = [
+        {"result": {"response": {"token": "Thinking about your request", "isThinking": True}}},
+        {"result": {"response": {"token": "Checking review duration", "isThinking": True}}},
+        {"result": {"response": {"token": "Final answer", "isThinking": False}}},
+    ]
+
+    async def _run():
+        out: list[str] = []
+        async for chunk in proc.process(_ndjson_stream(upstream)):
+            out.append(chunk)
+        return out
+
+    chunks = asyncio.run(_run())
+    parsed = [_parse_sse_data(c) for c in chunks]
+    content = "".join(
+        choice["delta"].get("content", "")
+        for obj in parsed
+        if isinstance(obj, dict)
+        for choice in obj.get("choices", [])
+        if choice.get("delta")
+    )
+
+    assert content == "Final answer"
+
+
+def test_stream_processor_defaults_to_hiding_thinking_for_openai_compat(monkeypatch):
+    def _config_with_global_thinking_enabled(key: str, default=None):
+        if key == "grok.thinking":
+            return True
+        return _fake_get_config(key, default)
+
+    monkeypatch.setattr(processor_mod, "get_config", _config_with_global_thinking_enabled)
+
+    proc = processor_mod.StreamProcessor(
+        model="grok-4-mini-thinking-tahoe",
+        token="test-token",
+        think=None,
+        prompt_tokens=0,
+    )
+
+    upstream = [
+        {"result": {"response": {"token": "Thinking about your request", "isThinking": True}}},
+        {"result": {"response": {"token": "Final answer", "isThinking": False}}},
+    ]
+
+    async def _run():
+        out: list[str] = []
+        async for chunk in proc.process(_ndjson_stream(upstream)):
+            out.append(chunk)
+        return out
+
+    chunks = asyncio.run(_run())
+    parsed = [_parse_sse_data(c) for c in chunks]
+    content = "".join(
+        choice["delta"].get("content", "")
+        for obj in parsed
+        if isinstance(obj, dict)
+        for choice in obj.get("choices", [])
+        if choice.get("delta")
+    )
+
+    assert content == "Final answer"

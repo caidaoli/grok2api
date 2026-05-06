@@ -151,11 +151,11 @@ class StreamProcessor(BaseProcessor):
         self.prompt_tokens = prompt_tokens
         self._completion_tokens = 0
         self._raw_parts: list[str] = []
+        self.thinking_finished: bool = False
 
-        if think is None:
-            self.show_think = get_config("grok.thinking", False)
-        else:
-            self.show_think = think
+        # OpenAI Chat Completions has no standard reasoning/thinking delta field.
+        # Hide upstream thinking by default; expose it only when the caller opts in.
+        self.show_think = bool(think)
     
     async def process(self, response: AsyncIterable[bytes]) -> AsyncGenerator[str, None]:
         """处理流式响应"""
@@ -225,8 +225,25 @@ class StreamProcessor(BaseProcessor):
                 # 普通 token
                 if (token := resp.get("token")) is not None:
                     if token and not (self.filter_tags and any(t in token for t in self.filter_tags)):
-                        self._raw_parts.append(token)
-                        yield _emit(token)
+                        current_is_thinking = bool(resp.get("isThinking"))
+
+                        if self.thinking_finished and current_is_thinking:
+                            continue
+
+                        content = token
+                        if current_is_thinking:
+                            if not self.show_think:
+                                continue
+                            if not self.think_opened:
+                                content = f"<think>\n{content}"
+                                self.think_opened = True
+                        elif self.think_opened:
+                            content = f"\n</think>\n{content}"
+                            self.think_opened = False
+                            self.thinking_finished = True
+
+                        self._raw_parts.append(content)
+                        yield _emit(content)
 
             if self.think_opened:
                 yield _emit("</think>\n")
