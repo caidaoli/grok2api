@@ -35,10 +35,10 @@ class StatsigService:
         # 随机格式
         if random.choice([True, False]):
             rand = StatsigService._rand(5, alphanumeric=True)
-            message = f"e:TypeError: Cannot read properties of null (reading 'children['{rand}']')"
+            message = f"x1:TypeError: Cannot read properties of null (reading 'children['{rand}']')"
         else:
             rand = StatsigService._rand(10)
-            message = f"e:TypeError: Cannot read properties of undefined (reading '{rand}')"
+            message = f"x1:TypeError: Cannot read properties of undefined (reading '{rand}')"
         
         return base64.b64encode(message.encode()).decode()
 
