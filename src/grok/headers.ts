@@ -31,10 +31,10 @@ function generateStatsigId(): string {
   let msg: string;
   if (Math.random() < 0.5) {
     const rand = randomString(5, false);
-    msg = `e:TypeError: Cannot read properties of null (reading 'children['${rand}']')`;
+    msg = `x1:TypeError: Cannot read properties of null (reading 'children['${rand}']')`;
   } else {
     const rand = randomString(10, true);
-    msg = `e:TypeError: Cannot read properties of undefined (reading '${rand}')`;
+    msg = `x1:TypeError: Cannot read properties of undefined (reading '${rand}')`;
   }
   return btoa(msg);
 }
