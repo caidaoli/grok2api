@@ -328,6 +328,7 @@ class CollectProcessor(BaseProcessor):
                             
         except Exception as e:
             logger.error(f"Collect processing error: {e}", extra={"model": self.model})
+            raise
         finally:
             await self.close()
         

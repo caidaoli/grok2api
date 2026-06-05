@@ -64,6 +64,29 @@ def test_fetch_rejects_domain_resolving_to_private_ip(monkeypatch):
         asyncio.run(assets_mod.BaseService.fetch("http://example.internal/a.png"))
 
 
+def test_fetch_rejects_domain_when_dns_resolution_times_out(monkeypatch):
+    monkeypatch.setattr(assets_mod, "AsyncSession", _NoNetworkSession)
+
+    def _fake_getaddrinfo(host, *args, **kwargs):
+        assert host == "slow.example"
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 80)),
+        ]
+
+    async def _fake_wait_for(awaitable, timeout):
+        awaitable.close()
+        assert timeout == 5
+        raise TimeoutError
+
+    monkeypatch.setattr(assets_mod.socket, "getaddrinfo", _fake_getaddrinfo, raising=False)
+    monkeypatch.setattr(assets_mod.asyncio, "wait_for", _fake_wait_for)
+
+    with pytest.raises(ValidationException) as exc_info:
+        asyncio.run(assets_mod.BaseService.fetch("http://slow.example/a.png"))
+
+    assert "unable to resolve host" in str(exc_info.value)
+
+
 def test_fetch_allows_public_ip_and_returns_base64(monkeypatch):
     resp = _FakeResponse(status_code=200, content=b"hello", content_type="text/plain")
     session = _FakeSession(resp)

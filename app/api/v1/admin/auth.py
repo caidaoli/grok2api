@@ -29,7 +29,7 @@ class AdminLoginBody(BaseModel):
 async def admin_login_api(request: Request, body: AdminLoginBody | None = Body(default=None)):
     """管理后台登录验证（用户名+密码）
 
-    - 默认账号/密码：admin/admin（可在配置管理的「应用设置」里修改）
+    - 默认账号/密码：admin/admin（用于首次部署引导，登录后应立即修改）
     - 兼容旧版本：允许 Authorization: Bearer <password> 仅密码登录（用户名默认为 admin）
     - 返回 HMAC session token（不暴露原始密码）
     """
@@ -39,7 +39,9 @@ async def admin_login_api(request: Request, body: AdminLoginBody | None = Body(d
     await check_login_rate_limit(client_ip)
 
     admin_username = str(get_config("app.admin_username", "admin") or "admin").strip() or "admin"
-    admin_password = str(get_config("app.app_key", "admin") or "admin").strip()
+    admin_password = str(get_config("app.app_key", "admin") or "").strip()
+    if not admin_password:
+        raise HTTPException(status_code=401, detail="App key is not configured")
 
     username = (body.username.strip() if body and isinstance(body.username, str) else "").strip()
     password = (body.password.strip() if body and isinstance(body.password, str) else "").strip()

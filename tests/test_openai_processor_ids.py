@@ -2,6 +2,7 @@ import asyncio
 from typing import Any, AsyncGenerator, Iterable
 
 import orjson
+import pytest
 
 import app.services.grok.processor as processor_mod
 
@@ -82,6 +83,34 @@ def test_collect_processor_returns_non_empty_chatcmpl_id(monkeypatch):
 
     assert isinstance(result.get("id"), str)
     assert result["id"].startswith("chatcmpl-")
+
+
+def test_collect_processor_reraises_midstream_errors(monkeypatch):
+    monkeypatch.setattr(processor_mod, "get_config", _fake_get_config)
+
+    proc = processor_mod.CollectProcessor(
+        model="grok-4-mini-thinking-tahoe",
+        token="test-token",
+        prompt_tokens=0,
+    )
+    closed = False
+
+    async def _close():
+        nonlocal closed
+        closed = True
+
+    async def _broken_stream():
+        yield orjson.dumps(
+            {"result": {"response": {"modelResponse": {"message": "partial", "generatedImageUrls": []}}}}
+        )
+        raise RuntimeError("upstream broke")
+
+    monkeypatch.setattr(proc, "close", _close)
+
+    with pytest.raises(RuntimeError, match="upstream broke"):
+        asyncio.run(proc.process(_broken_stream()))
+
+    assert closed is True
 
 
 def test_stream_processor_first_chunk_contains_content_from_upstream(monkeypatch):

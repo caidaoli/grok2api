@@ -251,7 +251,10 @@ class BaseService:
         # Domain name: resolve and validate every result.
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         try:
-            infos = await asyncio.to_thread(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM)
+            infos = await asyncio.wait_for(
+                asyncio.to_thread(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM),
+                timeout=5,
+            )
         except Exception:
             raise ValidationException("Invalid URL: unable to resolve host", param="url", code="invalid_url")
 
