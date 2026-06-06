@@ -8,7 +8,6 @@ let batchTotal = 0;
 let batchProcessed = 0;
 let currentBatchAction = null;
 const BATCH_SIZE = 50;
-let liveStatsTimer = null;
 let isWorkersRuntime = false;
 let isNsfwRefreshAllRunning = false;
 
@@ -167,8 +166,7 @@ function applyFilters() {
 }
 
 function onFilterChange() {
-  applyFilters();
-  renderTable();
+  loadData();
 }
 
 function resetFilters() {
@@ -177,8 +175,7 @@ function resetFilters() {
       const el = document.getElementById(id);
       if (el) el.checked = false;
     });
-  applyFilters();
-  renderTable();
+  loadData();
 }
 
 function setNsfwRefreshUiEnabled(enabled) {
@@ -228,79 +225,6 @@ async function init() {
   if (apiKey === null) return;
   setupConfirmDialog();
   loadData();
-  startLiveStats();
-}
-
-function startLiveStats() {
-  if (liveStatsTimer) clearInterval(liveStatsTimer);
-  // Keep stats fresh (use_count / quota changes) without disrupting table interactions.
-  liveStatsTimer = setInterval(() => {
-    refreshStatsOnly();
-  }, 5000);
-}
-
-async function refreshStatsOnly() {
-  try {
-    const res = await fetch('/api/v1/admin/tokens', {
-      headers: buildAuthHeaders(apiKey)
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    if (!res.ok) return;
-    const data = await res.json();
-
-    // Recalculate stats without re-rendering table.
-    let totalTokens = 0;
-    let activeTokens = 0;
-    let coolingTokens = 0;
-    let invalidTokens = 0;
-    let disabledTokens = 0;
-    let chatQuota = 0;
-    let totalCalls = 0;
-
-    Object.keys(data || {}).forEach(pool => {
-      const tokens = data[pool];
-      if (!Array.isArray(tokens)) return;
-      tokens.forEach(t => {
-        const row = normalizeTokenRecord(pool, t);
-        if (!row) return;
-        totalTokens += 1;
-        const useCount = Number(row.use_count || 0) || 0;
-        totalCalls += useCount;
-        if (isTokenDisabled(row)) {
-          disabledTokens += 1;
-        } else if (isTokenInvalid(row)) {
-          invalidTokens += 1;
-        } else if (isTokenExhausted(row)) {
-          coolingTokens += 1;
-        } else {
-          activeTokens += 1;
-          if (Boolean(row.quota_known) && Number(row.quota) > 0) {
-            chatQuota += Number(row.quota);
-          }
-        }
-      });
-    });
-
-    const imageQuota = Math.floor(chatQuota / 2);
-
-    const setText = (id, text) => {
-      const el = document.getElementById(id);
-      if (el) el.innerText = text;
-    };
-    setText('stat-total', totalTokens.toLocaleString());
-    setText('stat-active', activeTokens.toLocaleString());
-    setText('stat-cooling', coolingTokens.toLocaleString());
-    setText('stat-invalid', invalidTokens.toLocaleString());
-    setText('stat-disabled', disabledTokens.toLocaleString());
-    setText('stat-chat-quota', chatQuota.toLocaleString());
-    setText('stat-image-quota', imageQuota.toLocaleString());
-    setText('stat-total-calls', totalCalls.toLocaleString());
-  } catch (e) {
-    // Silent by design; do not spam toasts.
-  }
 }
 
 async function loadData() {
