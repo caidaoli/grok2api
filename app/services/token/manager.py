@@ -647,6 +647,37 @@ class TokenManager:
         logger.info(f"Pool '{pool_name}': token added")
         return True
 
+    def add_token_records(self, pool_name: str, records: list[dict[str, Any]]) -> list[str]:
+        """Add already-persisted token records to the in-memory pools."""
+        pool_name = str(pool_name or "").strip() or "ssoBasic"
+        if pool_name not in self.pools:
+            self.pools[pool_name] = TokenPool(pool_name)
+            logger.info(f"Pool '{pool_name}': created")
+
+        pool = self.pools[pool_name]
+        allowed_fields = set(TokenInfo.model_fields)
+        added: list[str] = []
+        for record in records or []:
+            if not isinstance(record, dict):
+                continue
+            data = {k: v for k, v in record.items() if k in allowed_fields}
+            raw_token = self._normalize_input_token(str(data.get("token") or ""))
+            if not raw_token:
+                continue
+            if self._find_token_info(raw_token)[0]:
+                continue
+            data["token"] = raw_token
+            if data.get("status") == "invalid":
+                data["status"] = "expired"
+            try:
+                pool.add(TokenInfo(**data))
+                added.append(raw_token)
+            except Exception as e:
+                logger.warning(f"Pool '{pool_name}': failed to add imported token: {e}")
+        if added:
+            self._last_reload_at = time.monotonic()
+        return added
+
     async def mark_asset_clear(self, token: str) -> bool:
         """Record online asset cleanup timestamp."""
         info, _ = self._find_token_info(token)
@@ -712,6 +743,25 @@ class TokenManager:
         
         logger.warning(f"Token not found for removal")
         return False
+
+    def remove_tokens(self, tokens: list[str]) -> int:
+        """Remove already-deleted tokens from in-memory pools without saving."""
+        wanted = {
+            normalized
+            for normalized in (self._normalize_input_token(t) for t in (tokens or []))
+            if normalized
+        }
+        if not wanted:
+            return 0
+
+        removed = 0
+        for pool in self.pools.values():
+            for token in list(wanted):
+                if pool.remove(token):
+                    removed += 1
+        if removed:
+            self._last_reload_at = time.monotonic()
+        return removed
 
     async def reset_all(self):
         """重置所有 Token 配额"""

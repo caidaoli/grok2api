@@ -74,6 +74,68 @@ class BaseStorage(abc.ABC):
             raw = raw[4:].strip()
         return raw
 
+    @classmethod
+    def _normalize_token_payload(cls, item: Any) -> dict[str, Any] | None:
+        if isinstance(item, str):
+            token = cls._normalize_token_key(item)
+            return {"token": token} if token else None
+        if not isinstance(item, dict):
+            return None
+        record = dict(item)
+        token = cls._normalize_token_key(record.get("token"))
+        if not token:
+            return None
+        record["token"] = token
+        return record
+
+    async def add_tokens(self, pool_name: str, tokens: list[Any]) -> list[str]:
+        """Add only missing tokens; backends should override with targeted writes."""
+        pool = str(pool_name or "").strip() or "ssoBasic"
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in tokens or []:
+            record = self._normalize_token_payload(item)
+            if not record:
+                continue
+            token = record["token"]
+            if token in seen:
+                continue
+            seen.add(token)
+            records.append(record)
+        if not records:
+            return []
+
+        data = await self.load_tokens()
+        if not isinstance(data, dict):
+            data = {}
+
+        existing: set[str] = set()
+        for items in data.values():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                record = self._normalize_token_payload(item)
+                if record:
+                    existing.add(record["token"])
+
+        target = data.get(pool)
+        if not isinstance(target, list):
+            target = []
+            data[pool] = target
+
+        added: list[str] = []
+        for record in records:
+            token = record["token"]
+            if token in existing:
+                continue
+            target.append(record)
+            existing.add(token)
+            added.append(token)
+
+        if added:
+            await self.save_tokens(data)
+        return added
+
     async def delete_tokens(self, tokens: list[str]) -> int:
         """删除指定 Token；后端未覆盖时退化为 load-filter-save。"""
         wanted: set[str] = set()
@@ -491,6 +553,55 @@ class RedisStorage(BaseStorage):
             logger.error(f"RedisStorage: 保存 Token 失败: {e}")
             raise
 
+    async def add_tokens(self, pool_name: str, tokens: list[Any]) -> list[str]:
+        """定向新增 Token，避免导入时全量重写 Redis 索引。"""
+        pool = str(pool_name or "").strip() or "ssoBasic"
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in tokens or []:
+            record = self._normalize_token_payload(item)
+            if not record:
+                continue
+            token = record["token"]
+            if token in seen:
+                continue
+            seen.add(token)
+            records.append(record)
+        if not records:
+            return []
+
+        try:
+            async with self.redis.pipeline() as pipe:
+                for record in records:
+                    pipe.exists(f"{self.prefix_token_hash}{record['token']}")
+                exists_res = await pipe.execute()
+
+            to_add = [record for record, exists in zip(records, exists_res) if not exists]
+            if not to_add:
+                return []
+
+            async with self.redis.pipeline() as pipe:
+                pipe.sadd(self.key_pools, pool)
+                for record in to_add:
+                    token = record["token"]
+                    flat = dict(record)
+                    if "tags" in flat:
+                        flat["tags"] = json_dumps(flat["tags"])
+                    status = flat.get("status")
+                    if isinstance(status, str) and status.startswith("TokenStatus."):
+                        flat["status"] = status.split(".", 1)[1].lower()
+                    elif isinstance(status, Enum):
+                        flat["status"] = status.value
+                    flat = {k: str(v) for k, v in flat.items() if v is not None}
+                    pipe.hset(f"{self.prefix_token_hash}{token}", mapping=flat)
+                    pipe.sadd(f"{self.prefix_pool_set}{pool}", token)
+                await pipe.execute()
+
+            return [record["token"] for record in to_add]
+        except Exception as e:
+            logger.error(f"RedisStorage: 新增 Token 失败: {e}")
+            raise
+
     async def delete_tokens(self, tokens: list[str]) -> int:
         """定向删除 Token，避免 Redis 后端全量重写。"""
         token_ids = list(dict.fromkeys(
@@ -837,6 +948,73 @@ class SQLStorage(BaseStorage):
                 await session.commit()
         except Exception as e:
             logger.error(f"SQLStorage: 保存 Token 失败: {e}")
+            raise
+
+    async def add_tokens(self, pool_name: str, tokens: list[Any]) -> list[str]:
+        """定向新增 Token，避免导入时保存整张 tokens 表。"""
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        pool = str(pool_name or "").strip() or "ssoBasic"
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in tokens or []:
+            record = self._normalize_token_payload(item)
+            if not record:
+                continue
+            token = record["token"]
+            if token in seen:
+                continue
+            seen.add(token)
+            records.append(record)
+        if not records:
+            return []
+
+        try:
+            async with self.async_session() as session:
+                existing: set[str] = set()
+                chunk_size = 500
+                token_keys = [record["token"] for record in records]
+                for start in range(0, len(token_keys), chunk_size):
+                    chunk = token_keys[start:start + chunk_size]
+                    params = {f"t{i}": token for i, token in enumerate(chunk)}
+                    placeholders = ", ".join(f":{name}" for name in params)
+                    res = await session.execute(
+                        text(f"SELECT token FROM tokens WHERE token IN ({placeholders})"),
+                        params,
+                    )
+                    existing.update(str(row[0]) for row in res.fetchall())
+
+                to_add = [record for record in records if record["token"] not in existing]
+                if not to_add:
+                    return []
+
+                params = [
+                    {
+                        "token": record["token"],
+                        "pool_name": pool,
+                        "data": json_dumps(record),
+                        "updated_at": 0,
+                    }
+                    for record in to_add
+                ]
+
+                if self.dialect in ("mysql", "mariadb"):
+                    stmt = text(
+                        "INSERT IGNORE INTO tokens (token, pool_name, data, updated_at) "
+                        "VALUES (:token, :pool_name, :data, :updated_at)"
+                    )
+                else:
+                    stmt = text(
+                        "INSERT INTO tokens (token, pool_name, data, updated_at) "
+                        "VALUES (:token, :pool_name, :data, :updated_at) "
+                        "ON CONFLICT (token) DO NOTHING"
+                    )
+                await session.execute(stmt, params)
+                await session.commit()
+                return [record["token"] for record in to_add]
+        except Exception as e:
+            logger.error(f"SQLStorage: 新增 Token 失败: {e}")
             raise
 
     async def delete_tokens(self, tokens: list[str]) -> int:

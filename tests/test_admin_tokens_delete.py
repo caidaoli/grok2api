@@ -27,13 +27,14 @@ class _DummyStorage:
 class _DummyTokenManager:
     def __init__(self):
         self.cancel_pending_save_calls = 0
-        self.reload_calls = 0
+        self.removed_tokens: list[str] = []
 
     async def cancel_pending_save(self):
         self.cancel_pending_save_calls += 1
 
-    async def reload(self):
-        self.reload_calls += 1
+    def remove_tokens(self, tokens):
+        self.removed_tokens.extend(tokens)
+        return len(tokens)
 
 
 def test_delete_tokens_api_uses_targeted_storage_delete(monkeypatch):
@@ -54,7 +55,7 @@ def test_delete_tokens_api_uses_targeted_storage_delete(monkeypatch):
     assert storage.deleted_tokens == ["token-a", "token-b"]
     assert storage.save_tokens_calls == 0
     assert mgr.cancel_pending_save_calls == 1
-    assert mgr.reload_calls == 1
+    assert mgr.removed_tokens == ["token-a", "token-b"]
 
 
 class _FakeExecuteResult:

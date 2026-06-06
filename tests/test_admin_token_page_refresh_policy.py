@@ -32,8 +32,28 @@ def test_token_page_does_not_poll_tokens_api():
     assert "refreshStatsOnly" not in source
 
 
-def test_filter_changes_reload_tokens_from_server():
+def test_filter_changes_render_locally_without_reload():
     source = _read_token_js()
 
-    assert "loadData(" in _function_body(source, "onFilterChange")
-    assert "loadData(" in _function_body(source, "resetFilters")
+    assert "applyLocalView(" in _function_body(source, "onFilterChange")
+    assert "applyLocalView(" in _function_body(source, "resetFilters")
+    assert "loadData(" not in _function_body(source, "onFilterChange")
+    assert "loadData(" not in _function_body(source, "resetFilters")
+
+
+def test_import_uses_incremental_endpoint_and_indexed_dedupe():
+    source = _read_token_js()
+    body = _function_body(source, "submitImport")
+
+    assert "new Set(tokenIndex.keys())" in body
+    assert "addTokensToServer(" in body
+    assert "syncToServer(" not in body
+    assert "flatTokens.some" not in body
+
+
+def test_batch_refresh_has_no_client_side_chunk_delay():
+    source = _read_token_js()
+    body = _function_body(source, "processBatchQueue")
+
+    assert "setTimeout(" not in body
+    assert "batchQueue.splice(0, batchQueue.length)" in body

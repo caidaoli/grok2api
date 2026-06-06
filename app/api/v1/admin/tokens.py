@@ -16,7 +16,7 @@ from app.services.token.account_settings import (
     normalize_sso_token as normalize_refresh_token,
 )
 from app.services.token import get_token_manager
-from app.services.token.models import TokenStatus
+from app.services.token.models import DEFAULT_QUOTA, TokenInfo, TokenStatus
 from app.api.v1.admin.common import _safe_int
 
 router = APIRouter()
@@ -131,6 +131,66 @@ def _collect_tokens_from_delete_payload(payload: Any) -> list[str]:
         seen.add(token)
         collected.append(token)
     return collected
+
+
+def _collect_import_token_records(pool_name: str, payload: Any) -> list[dict]:
+    raw_items: Any = []
+    if isinstance(payload, dict):
+        raw_items = payload.get("tokens")
+    if not isinstance(raw_items, list):
+        return []
+
+    records: list[dict] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if isinstance(item, str):
+            token = normalize_refresh_token(item)
+            source: dict[str, Any] = {}
+        elif isinstance(item, dict):
+            token = normalize_refresh_token(str(item.get("token") or ""))
+            source = item
+        else:
+            continue
+
+        if not token or token in seen:
+            continue
+        seen.add(token)
+
+        quota, quota_known = _parse_quota_value(source.get("quota"))
+        heavy_quota, heavy_quota_known = _parse_quota_value(source.get("heavy_quota"))
+        records.append({
+            "token": token,
+            "status": _normalize_token_status(source.get("status")),
+            "quota": quota if quota_known else DEFAULT_QUOTA,
+            "heavy_quota": heavy_quota if heavy_quota_known else -1,
+            "note": str(source.get("note") or "")[:50],
+            "fail_count": _safe_int(source.get("fail_count") or 0, 0),
+            "use_count": _safe_int(source.get("use_count") or 0, 0),
+        })
+    return records
+
+
+def _token_info_to_admin_record(pool_name: str, info: TokenInfo) -> dict | None:
+    if hasattr(info, "model_dump"):
+        data = info.model_dump(mode="json")
+    else:
+        data = dict(getattr(info, "__dict__", {}))
+    data.pop("inflight_map", None)
+    obj = _normalize_admin_token_item(pool_name, data)
+    if obj:
+        obj["pool"] = pool_name
+    return obj
+
+
+def _find_manager_token_record(mgr: Any, token: str) -> dict | None:
+    raw = normalize_refresh_token(token)
+    if not raw:
+        return None
+    for pool_name, pool in getattr(mgr, "pools", {}).items():
+        info = pool.get(raw)
+        if info:
+            return _token_info_to_admin_record(str(pool_name), info)
+    return None
 
 
 def _resolve_nsfw_refresh_concurrency(override: Any = None) -> int:
@@ -251,6 +311,65 @@ async def update_tokens_api(data: dict):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/api/v1/admin/tokens/import", dependencies=[Depends(verify_app_key)])
+async def import_tokens_api(data: dict):
+    """Import missing tokens without rewriting the full token set."""
+    payload = data if isinstance(data, dict) else {}
+    pool_name = str(payload.get("pool") or "ssoBasic").strip() or "ssoBasic"
+    records = _collect_import_token_records(pool_name, payload)
+    if not records:
+        raise HTTPException(status_code=400, detail="No tokens provided")
+
+    storage = get_storage()
+    try:
+        mgr = await get_token_manager()
+        await mgr.cancel_pending_save()
+
+        async with storage.acquire_lock("tokens_save", timeout=30):
+            added_tokens = await storage.add_tokens(pool_name, records)
+            by_token = {record["token"]: record for record in records}
+            added_records = [by_token[token] for token in added_tokens if token in by_token]
+            if added_records and hasattr(mgr, "add_token_records"):
+                mgr.add_token_records(pool_name, added_records)
+
+        concurrency = _resolve_nsfw_refresh_concurrency()
+        retries = _resolve_nsfw_refresh_retries()
+        _trigger_account_settings_refresh_background(
+            tokens=added_tokens,
+            concurrency=concurrency,
+            retries=retries,
+        )
+
+        response_records: list[dict] = []
+        for token in added_tokens:
+            record = _find_manager_token_record(mgr, token)
+            if record:
+                response_records.append(record)
+            elif token in by_token:
+                fallback = _normalize_admin_token_item(pool_name, by_token[token])
+                if fallback:
+                    fallback["pool"] = pool_name
+                    response_records.append(fallback)
+
+        return {
+            "status": "success",
+            "added": len(added_tokens),
+            "skipped": len(records) - len(added_tokens),
+            "tokens": response_records,
+            "nsfw_refresh": {
+                "mode": "background",
+                "triggered": len(added_tokens),
+                "concurrency": concurrency,
+                "retries": retries,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Admin token import API error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.post("/api/v1/admin/tokens/delete", dependencies=[Depends(verify_app_key)])
 async def delete_tokens_api(data: dict):
     """Delete selected tokens without rewriting the full token set."""
@@ -267,7 +386,8 @@ async def delete_tokens_api(data: dict):
 
         async with storage.acquire_lock("tokens_save", timeout=30):
             deleted = await storage.delete_tokens(tokens)
-            await mgr.reload()
+            if deleted and hasattr(mgr, "remove_tokens"):
+                mgr.remove_tokens(tokens)
 
         return {"status": "success", "deleted": deleted}
     except HTTPException:
@@ -291,7 +411,9 @@ async def refresh_tokens_api(data: dict):
         if not tokens:
              raise HTTPException(status_code=400, detail="No tokens provided")
 
-        unique_tokens = list(set(tokens))
+        unique_tokens = list(dict.fromkeys(
+            token for token in (normalize_refresh_token(str(t or "")) for t in tokens) if token
+        ))
 
         sem = asyncio.Semaphore(10)
 
@@ -312,12 +434,16 @@ async def refresh_tokens_api(data: dict):
 
         results_list = await asyncio.gather(*[_refresh_one(t) for t in unique_tokens])
         results = dict(results_list)
+        refreshed = [
+            record for record in (_find_manager_token_record(mgr, token) for token, ok in results.items() if ok)
+            if record
+        ]
 
         any_changed = any(results.values())
         if any_changed:
             mgr._schedule_save()
 
-        return {"status": "success", "results": results}
+        return {"status": "success", "results": results, "tokens": refreshed}
     except Exception:
         logger.exception("Admin API error")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -337,12 +463,18 @@ async def reset_tokens_api(data: dict):
         if not tokens:
             raise HTTPException(status_code=400, detail="No tokens provided")
 
-        unique_tokens = list(set(tokens))
+        unique_tokens = list(dict.fromkeys(
+            token for token in (normalize_refresh_token(str(t or "")) for t in tokens) if token
+        ))
         results = {}
         for t in unique_tokens:
             results[t] = await mgr.reset_token(t)
+        reset_records = [
+            record for record in (_find_manager_token_record(mgr, token) for token, ok in results.items() if ok)
+            if record
+        ]
 
-        return {"status": "success", "results": results}
+        return {"status": "success", "results": results, "tokens": reset_records}
     except Exception:
         logger.exception("Admin API error")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -396,4 +528,3 @@ async def refresh_tokens_nsfw_api(data: dict):
         "summary": result.get("summary") or {},
         "failed": result.get("failed") or [],
     }
-

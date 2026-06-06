@@ -33,6 +33,7 @@ import {
   updateTokenNote,
   updateTokenTags,
   updateTokenLimits,
+  type TokenRow,
 } from "../repo/tokens";
 import { generateImagineWs, resolveAspectRatio } from "../grok/imagineExperimental";
 import { checkRateLimits } from "../grok/rateLimits";
@@ -187,6 +188,69 @@ function poolToTokenType(pool: string): "sso" | "ssoSuper" | null {
   if (pool === "ssoSuper") return "ssoSuper";
   if (pool === "ssoBasic") return "sso";
   return null;
+}
+
+function legacyAdminTokenRecord(r: {
+  token: string;
+  token_type: "sso" | "ssoSuper";
+  remaining_queries: number;
+  heavy_remaining_queries: number;
+  status: string;
+  note: string | null;
+  failed_count: number;
+  cooldown_until: number | null;
+}): Record<string, unknown> {
+  const now = nowMs();
+  const pool = toPoolName(r.token_type);
+  const isCooling = Boolean(r.cooldown_until && r.cooldown_until > now);
+  const status = r.status === "expired" ? "invalid" : isCooling ? "cooling" : "active";
+  const quotaKnown = Number.isFinite(r.remaining_queries) && r.remaining_queries >= 0;
+  const heavyQuotaKnown =
+    r.token_type === "ssoSuper" && Number.isFinite(r.heavy_remaining_queries) && r.heavy_remaining_queries >= 0;
+  return {
+    token: `sso=${r.token}`,
+    pool,
+    status,
+    quota: quotaKnown ? r.remaining_queries : -1,
+    quota_known: quotaKnown,
+    heavy_quota: heavyQuotaKnown ? r.heavy_remaining_queries : -1,
+    heavy_quota_known: heavyQuotaKnown,
+    token_type: r.token_type,
+    note: r.note ?? "",
+    fail_count: r.failed_count ?? 0,
+    use_count: 0,
+  };
+}
+
+async function listLegacyAdminTokenRecords(
+  db: Env["DB"],
+  tokens: string[],
+): Promise<Record<string, unknown>[]> {
+  const unique = [...new Set(tokens.map((t) => normalizeSsoToken(t)).filter(Boolean))];
+  if (!unique.length) return [];
+
+  const rows: TokenRow[] = [];
+  const chunkSize = 500;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => "?").join(",");
+    rows.push(
+      ...(await dbAll<TokenRow>(
+        db,
+        `SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count FROM tokens WHERE token IN (${placeholders})`,
+        chunk,
+      )),
+    );
+  }
+
+  const byToken = new Map(rows.map((r) => [r.token, legacyAdminTokenRecord(r)]));
+  return unique.map((token) => byToken.get(token)).filter((x): x is Record<string, unknown> => Boolean(x));
+}
+
+function parseLegacyQuota(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.floor(n);
 }
 
 async function getKvStats(db: Env["DB"]): Promise<{
@@ -703,6 +767,155 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
   }
 });
 
+adminRoutes.post("/api/v1/admin/tokens/import", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as any;
+    const pool = String(body?.pool ?? "ssoBasic").trim() || "ssoBasic";
+    const tokenType = poolToTokenType(pool);
+    if (!tokenType) return c.json(legacyErr("Invalid pool"), 400);
+    const rawItems = Array.isArray(body?.tokens) ? body.tokens : [];
+
+    const records: Array<{
+      token: string;
+      quota: number;
+      heavyQuota: number;
+      status: "active" | "expired";
+      cooldownUntil: number | null;
+      note: string;
+    }> = [];
+    const seen = new Set<string>();
+    const now = nowMs();
+    for (const item of rawItems) {
+      const tokenRaw = typeof item === "string" ? item : item?.token;
+      const token = normalizeSsoToken(String(tokenRaw ?? ""));
+      if (!token || seen.has(token)) continue;
+      seen.add(token);
+
+      const source = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+      const statusRaw = String(source.status ?? "active").trim().toLowerCase();
+      const quota = parseLegacyQuota(source.quota, 80);
+      const heavyQuota =
+        tokenType === "ssoSuper"
+          ? parseLegacyQuota(source.heavy_quota, -1)
+          : -1;
+      records.push({
+        token,
+        quota,
+        heavyQuota,
+        status: statusRaw === "invalid" || statusRaw === "expired" ? "expired" : "active",
+        cooldownUntil: statusRaw === "cooling" ? now + 60 * 60 * 1000 : null,
+        note: String(source.note ?? "").trim().slice(0, 50),
+      });
+    }
+
+    if (!records.length) return c.json(legacyErr("No tokens provided"), 400);
+
+    const existingRows = await listLegacyAdminTokenRecords(c.env.DB, records.map((r) => r.token));
+    const existing = new Set(
+      existingRows.map((r) => normalizeSsoToken(String(r.token ?? ""))).filter(Boolean),
+    );
+    const toAdd = records.filter((r) => !existing.has(r.token));
+
+    if (toAdd.length) {
+      const stmts = toAdd.map((r) =>
+        c.env.DB.prepare(
+          "INSERT OR IGNORE INTO tokens(token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, failed_count, cooldown_until, last_failure_time, last_failure_reason, tags, note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        ).bind(
+          r.token,
+          tokenType,
+          now,
+          r.quota,
+          tokenType === "ssoSuper" ? r.heavyQuota : -1,
+          r.status,
+          0,
+          r.cooldownUntil,
+          null,
+          null,
+          "[]",
+          r.note,
+        ),
+      );
+      await c.env.DB.batch(stmts);
+    }
+
+    const addedTokens = toAdd.map((r) => r.token);
+    const tokens = await listLegacyAdminTokenRecords(c.env.DB, addedTokens);
+    return c.json(legacyOk({
+      added: addedTokens.length,
+      skipped: records.length - addedTokens.length,
+      tokens,
+      nsfw_refresh: {
+        mode: "unsupported",
+        triggered: 0,
+        concurrency: 0,
+        retries: 0,
+      },
+    }));
+  } catch (e) {
+    return c.json(legacyErr(`Import tokens failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/api/v1/admin/tokens/delete", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as any;
+    const candidates: string[] = [];
+    if (typeof body?.token === "string") candidates.push(body.token);
+    if (Array.isArray(body?.tokens)) candidates.push(...body.tokens.filter((x: any) => typeof x === "string"));
+    const tokens = [...new Set(candidates.map((t) => normalizeSsoToken(t)).filter(Boolean))];
+    if (!tokens.length) return c.json(legacyErr("No tokens provided"), 400);
+
+    let deleted = 0;
+    const chunkSize = 500;
+    for (let i = 0; i < tokens.length; i += chunkSize) {
+      const chunk = tokens.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => "?").join(",");
+      const before = await dbFirst<{ c: number }>(
+        c.env.DB,
+        `SELECT COUNT(1) as c FROM tokens WHERE token IN (${placeholders})`,
+        chunk,
+      );
+      await dbRun(c.env.DB, `DELETE FROM tokens WHERE token IN (${placeholders})`, chunk);
+      deleted += before?.c ?? 0;
+    }
+    return c.json(legacyOk({ deleted }));
+  } catch (e) {
+    return c.json(legacyErr(`Delete tokens failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/api/v1/admin/tokens/reset", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as any;
+    const candidates: string[] = [];
+    if (typeof body?.token === "string") candidates.push(body.token);
+    if (Array.isArray(body?.tokens)) candidates.push(...body.tokens.filter((x: any) => typeof x === "string"));
+    const tokens = [...new Set(candidates.map((t) => normalizeSsoToken(t)).filter(Boolean))];
+    if (!tokens.length) return c.json(legacyErr("No tokens provided"), 400);
+
+    const existingRecords = await listLegacyAdminTokenRecords(c.env.DB, tokens);
+    const existing = new Set(
+      existingRecords.map((r) => normalizeSsoToken(String(r.token ?? ""))).filter(Boolean),
+    );
+    if (existing.size) {
+      const values = [...existing];
+      const placeholders = values.map(() => "?").join(",");
+      await dbRun(
+        c.env.DB,
+        `UPDATE tokens SET status = 'active', remaining_queries = 80, heavy_remaining_queries = -1, failed_count = 0, cooldown_until = NULL, last_failure_time = NULL, last_failure_reason = NULL WHERE token IN (${placeholders})`,
+        values,
+      );
+    }
+
+    const results: Record<string, boolean> = {};
+    for (const token of tokens) results[token] = existing.has(token);
+    const updated = await listLegacyAdminTokenRecords(c.env.DB, [...existing]);
+    return c.json(legacyOk({ results, tokens: updated }));
+  } catch (e) {
+    return c.json(legacyErr(`Reset tokens failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
 adminRoutes.post("/api/v1/admin/tokens/refresh", requireAdminAuth, async (c) => {
   try {
     const body = (await c.req.json()) as any;
@@ -718,27 +931,36 @@ adminRoutes.post("/api/v1/admin/tokens/refresh", requireAdminAuth, async (c) => 
     const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
 
     const results: Record<string, boolean> = {};
-    for (const t of unique) {
-      try {
-        const cookie = cf ? `sso-rw=${t};sso=${t};${cf}` : `sso-rw=${t};sso=${t}`;
-        const r = await checkRateLimits(cookie, settings.grok, "grok-4-fast");
-        const remaining = (r as any)?.remainingTokens;
-        if (typeof remaining === "number") {
-          await updateTokenLimits(c.env.DB, t, {
-            remaining_queries: remaining,
-            heavy_remaining_queries: -1,
-          });
-          results[`sso=${t}`] = true;
-        } else {
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < unique.length) {
+        const t = unique[cursor++]!;
+        try {
+          const cookie = cf ? `sso-rw=${t};sso=${t};${cf}` : `sso-rw=${t};sso=${t}`;
+          const r = await checkRateLimits(cookie, settings.grok, "grok-4-fast");
+          const remaining = (r as any)?.remainingTokens;
+          if (typeof remaining === "number") {
+            await updateTokenLimits(c.env.DB, t, {
+              remaining_queries: remaining,
+              heavy_remaining_queries: -1,
+            });
+            results[`sso=${t}`] = true;
+          } else {
+            results[`sso=${t}`] = false;
+          }
+        } catch {
           results[`sso=${t}`] = false;
         }
-      } catch {
-        results[`sso=${t}`] = false;
       }
-      await new Promise((res) => setTimeout(res, 50));
-    }
+    };
+    const concurrency = Math.min(10, unique.length);
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-    return c.json(legacyOk({ results }));
+    const tokensPayload = await listLegacyAdminTokenRecords(
+      c.env.DB,
+      unique.filter((t) => Boolean(results[`sso=${t}`])),
+    );
+    return c.json(legacyOk({ results, tokens: tokensPayload }));
   } catch (e) {
     return c.json(legacyErr(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
