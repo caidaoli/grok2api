@@ -279,6 +279,7 @@ async def _iter_refresh_stream_events(mgr: Any, tokens: list[str], concurrency: 
     current = 0
     success = 0
     failed = 0
+    state_changed = False
     save_scheduled = False
     refreshed_records: list[dict] = []
     sem = asyncio.Semaphore(max(1, concurrency))
@@ -300,6 +301,13 @@ async def _iter_refresh_stream_events(mgr: Any, tokens: list[str], concurrency: 
                 success += 1
             else:
                 failed += 1
+                reason = f"manual_refresh_failed: {error}" if error else "manual_refresh_failed"
+                try:
+                    invalidated = bool(await mgr.set_token_invalid(token, reason=reason, save=False))
+                    state_changed = invalidated or state_changed
+                except Exception as exc:
+                    logger.warning("Admin token stream refresh could not disable {}: {}", token[-8:], exc)
+                    invalidated = False
 
             event = {
                 "type": "progress",
@@ -312,6 +320,8 @@ async def _iter_refresh_stream_events(mgr: Any, tokens: list[str], concurrency: 
             }
             if error:
                 event["error"] = error
+            if not ok:
+                event["invalidated"] = invalidated
             if ok:
                 record = _find_manager_token_record(mgr, token)
                 if record:
@@ -319,7 +329,7 @@ async def _iter_refresh_stream_events(mgr: Any, tokens: list[str], concurrency: 
                     event["record"] = record
             yield _encode_refresh_sse_event(event)
 
-        if success > 0:
+        if success > 0 or state_changed:
             mgr._schedule_save()
             save_scheduled = True
 
@@ -332,7 +342,7 @@ async def _iter_refresh_stream_events(mgr: Any, tokens: list[str], concurrency: 
             "tokens": refreshed_records,
         })
     finally:
-        if success > 0 and not save_scheduled:
+        if (success > 0 or state_changed) and not save_scheduled:
             mgr._schedule_save()
         for task in tasks:
             if not task.done():

@@ -67,6 +67,7 @@ class _StreamPool:
 class _StreamManager:
     def __init__(self):
         self.calls = []
+        self.invalidated = []
         self.save_scheduled = 0
         self.records = {
             "token-a": SimpleNamespace(
@@ -97,6 +98,15 @@ class _StreamManager:
     def _find_token_info(self, token):
         record = self.records.get(token)
         return record, None
+
+    async def set_token_invalid(self, token, reason="", save=True):
+        self.invalidated.append({"token": token, "reason": reason, "save": save})
+        record = self.records.get(token)
+        if not record:
+            return False
+        record.status = TokenStatus.DISABLED
+        record.last_fail_reason = reason
+        return True
 
     def _schedule_save(self):
         self.save_scheduled += 1
@@ -157,4 +167,34 @@ def test_refresh_tokens_stream_api_emits_progress_for_each_token(monkeypatch):
     assert events[2]["success"] == 1
     assert events[2]["failed"] == 1
     assert mgr.calls == ["token-a", "token-b"]
+    assert mgr.save_scheduled == 1
+
+
+def test_refresh_tokens_stream_api_disables_failed_tokens_and_saves(monkeypatch):
+    mgr = _StreamManager()
+    mgr.records["token-a"].status = TokenStatus.ACTIVE
+    mgr.records["token-b"].status = TokenStatus.ACTIVE
+
+    async def _fake_get_token_manager():
+        return mgr
+
+    async def _fake_refresh_one_token_usage(_mgr, token):
+        mgr.calls.append(token)
+        return False
+
+    monkeypatch.setattr(admin_tokens_module, "get_token_manager", _fake_get_token_manager)
+    monkeypatch.setattr(admin_tokens_module, "_refresh_one_token_usage", _fake_refresh_one_token_usage)
+
+    response = asyncio.run(
+        admin_tokens_module.refresh_tokens_stream_api({"tokens": ["token-a", "token-b"]})
+    )
+    events = _parse_sse_events(_collect_stream_body(response))
+
+    assert [event["ok"] for event in events if event["type"] == "progress"] == [False, False]
+    assert mgr.invalidated == [
+        {"token": "token-a", "reason": "manual_refresh_failed", "save": False},
+        {"token": "token-b", "reason": "manual_refresh_failed", "save": False},
+    ]
+    assert mgr.records["token-a"].status == TokenStatus.DISABLED
+    assert mgr.records["token-b"].status == TokenStatus.DISABLED
     assert mgr.save_scheduled == 1
