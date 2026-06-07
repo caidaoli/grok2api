@@ -97,25 +97,6 @@ def _normalize_admin_token_item(pool_name: str, item: Any) -> dict | None:
     }
 
 
-def _collect_tokens_from_pool_payload(payload: Any) -> list[str]:
-    if not isinstance(payload, dict):
-        return []
-
-    collected: list[str] = []
-    seen: set[str] = set()
-    for raw_items in payload.values():
-        if not isinstance(raw_items, list):
-            continue
-        for item in raw_items:
-            token_raw = item if isinstance(item, str) else (item.get("token") if isinstance(item, dict) else "")
-            token = normalize_refresh_token(str(token_raw or "").strip())
-            if not token or token in seen:
-                continue
-            seen.add(token)
-            collected.append(token)
-    return collected
-
-
 def _collect_tokens_from_delete_payload(payload: Any) -> list[str]:
     candidates: list[str] = []
     if isinstance(payload, dict):
@@ -224,35 +205,6 @@ def _resolve_nsfw_refresh_retries(override: Any = None) -> int:
     except Exception:
         value = 3
     return max(0, value)
-
-
-def _trigger_account_settings_refresh_background(
-    tokens: list[str],
-    concurrency: int,
-    retries: int,
-) -> None:
-    if not tokens:
-        return
-
-    async def _run() -> None:
-        try:
-            result = await refresh_account_settings_for_tokens(
-                tokens=tokens,
-                concurrency=concurrency,
-                retries=retries,
-            )
-            summary = result.get("summary") or {}
-            logger.info(
-                "Background account-settings refresh finished: total={} success={} failed={} invalidated={}",
-                summary.get("total", 0),
-                summary.get("success", 0),
-                summary.get("failed", 0),
-                summary.get("invalidated", 0),
-            )
-        except Exception as exc:
-            logger.warning("Background account-settings refresh failed: {}", exc)
-
-    asyncio.create_task(_run())
 
 
 async def _refresh_one_token_usage(mgr: Any, token: str) -> bool:
@@ -375,48 +327,23 @@ async def get_tokens_api():
 
 @router.post("/api/v1/admin/tokens", dependencies=[Depends(verify_app_key)])
 async def update_tokens_api(data: dict):
-    """Update token payload and trigger background account-settings refresh for new tokens."""
+    """Update token payload."""
     storage = get_storage()
     try:
         mgr = await get_token_manager()
 
         posted_data = data if isinstance(data, dict) else {}
-        existing_tokens: list[str] = []
-        added_tokens: list[str] = []
 
         # Cancel any background save to avoid competing for the same MySQL lock.
         await mgr.cancel_pending_save()
 
         async with storage.acquire_lock("tokens_save", timeout=30):
-            old_data = await storage.load_tokens()
-            existing_tokens = _collect_tokens_from_pool_payload(
-                old_data if isinstance(old_data, dict) else {}
-            )
-
             await storage.save_tokens(posted_data)
             await mgr.reload()
-
-            new_tokens = _collect_tokens_from_pool_payload(posted_data)
-            existing_set = set(existing_tokens)
-            added_tokens = [token for token in new_tokens if token not in existing_set]
-
-        concurrency = _resolve_nsfw_refresh_concurrency()
-        retries = _resolve_nsfw_refresh_retries()
-        _trigger_account_settings_refresh_background(
-            tokens=added_tokens,
-            concurrency=concurrency,
-            retries=retries,
-        )
 
         return {
             "status": "success",
             "message": "Token updated",
-            "nsfw_refresh": {
-                "mode": "background",
-                "triggered": len(added_tokens),
-                "concurrency": concurrency,
-                "retries": retries,
-            },
         }
     except Exception:
         logger.exception("Admin API error")
@@ -444,14 +371,6 @@ async def import_tokens_api(data: dict):
             if added_records and hasattr(mgr, "add_token_records"):
                 mgr.add_token_records(pool_name, added_records)
 
-        concurrency = _resolve_nsfw_refresh_concurrency()
-        retries = _resolve_nsfw_refresh_retries()
-        _trigger_account_settings_refresh_background(
-            tokens=added_tokens,
-            concurrency=concurrency,
-            retries=retries,
-        )
-
         response_records: list[dict] = []
         for token in added_tokens:
             record = _find_manager_token_record(mgr, token)
@@ -468,12 +387,6 @@ async def import_tokens_api(data: dict):
             "added": len(added_tokens),
             "skipped": len(records) - len(added_tokens),
             "tokens": response_records,
-            "nsfw_refresh": {
-                "mode": "background",
-                "triggered": len(added_tokens),
-                "concurrency": concurrency,
-                "retries": retries,
-            },
         }
     except HTTPException:
         raise

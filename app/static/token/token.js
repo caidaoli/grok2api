@@ -543,10 +543,6 @@ async function addTokensToServer(pool, records) {
       showToast(extractApiErrorMessage(payload, '导入失败'), 'error');
       return null;
     }
-    const triggered = Number(payload?.nsfw_refresh?.triggered || 0);
-    if (triggered > 0) {
-      showToast(`已后台触发 ${triggered} 个 Token 的协议/年龄/NSFW 刷新`, 'info');
-    }
     return payload || { status: 'success', added: 0, skipped: 0, tokens: [] };
   } catch (e) {
     showToast('导入错误: ' + e.message, 'error');
@@ -798,10 +794,6 @@ async function syncToServer() {
       return null;
     }
 
-    const triggered = Number(payload?.nsfw_refresh?.triggered || 0);
-    if (triggered > 0) {
-      showToast(`已后台触发 ${triggered} 个 Token 的协议/年龄/NSFW 刷新`, 'info');
-    }
     return payload;
   } catch (e) {
     showToast('保存错误: ' + e.message, 'error');

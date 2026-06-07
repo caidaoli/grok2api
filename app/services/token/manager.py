@@ -31,8 +31,6 @@ class TokenManager:
         self._save_lock = asyncio.Lock()
         self._dirty = False
         self._save_task: Optional[asyncio.Task] = None
-        self._usage_sync_tasks: set[asyncio.Task] = set()
-        self._inflight_syncs: Dict[str, asyncio.Task] = {}  # 去抖：token:bucket → task
         self._save_delay = 0.5
         self._last_reload_at = 0.0
         self._select_lock = asyncio.Lock()
@@ -230,18 +228,6 @@ class TokenManager:
             self._dirty = False
             await self._save()
 
-        inflight_tasks = set(self._usage_sync_tasks)
-        inflight_tasks.update(self._inflight_syncs.values())
-        for t in inflight_tasks:
-            if not t.done():
-                t.cancel()
-        for t in inflight_tasks:
-            with suppress(asyncio.CancelledError, Exception):
-                await t
-
-        self._usage_sync_tasks.clear()
-        self._inflight_syncs.clear()
-
     @classmethod
     async def close_instance(cls, flush: bool = True):
         """关闭全局单例实例（若存在）。"""
@@ -430,19 +416,6 @@ class TokenManager:
         logger.warning(f"Token {raw_token}: not found for consumption")
         return False
 
-    def _track_usage_sync_task(self, task: asyncio.Task):
-        """追踪后台用量同步任务，防止未处理异常泄漏。"""
-        self._usage_sync_tasks.add(task)
-
-        def _done(t: asyncio.Task):
-            self._usage_sync_tasks.discard(t)
-            try:
-                _ = t.result()
-            except Exception as e:
-                logger.warning(f"Usage sync background task failed: {e}")
-
-        task.add_done_callback(_done)
-
     async def _sync_usage_from_api(
         self,
         token_str: str,
@@ -507,7 +480,7 @@ class TokenManager:
         """
         同步 Token 用量
         
-        优先从 API 获取最新配额，失败则降级到本地预估
+        业务成功路径只做本地计数。管理端手动刷新仍可显式从 API 获取最新配额。
         
         Args:
             token_str: Token 字符串（可带 sso= 前缀）
@@ -533,37 +506,13 @@ class TokenManager:
             logger.warning(f"Token {raw_token}: not found for sync")
             return False
 
-        bucket = "heavy" if ModelService.is_heavy_bucket_model(model_id) else "normal"
-        rate_limit_model = ModelService.rate_limit_model_for(model_id)
-
-        # 请求链路：先本地扣额，再异步纠偏到真实额度，避免把用户请求阻塞在 /rest/rate-limits。
         if consume_on_fail and is_usage:
-            local_ok = await self.consume(token_str, fallback_effort, bucket=bucket)
-            if not local_ok:
-                return False
-
-            # 去抖：同一 token+bucket 只保留一个在飞行的 sync task
-            dedup_key = f"{raw_token}:{bucket}"
-            existing = self._inflight_syncs.get(dedup_key)
-            if existing and not existing.done():
-                return True
-
-            task = asyncio.create_task(
-                self._sync_usage_from_api(
-                    token_str=token_str,
-                    target_token=target_token,
-                    bucket=bucket,
-                    rate_limit_model=rate_limit_model,
-                    is_usage=False,  # 已本地计次，远端同步只纠偏额度
-                    retry=retry,
-                )
-            )
-            self._inflight_syncs[dedup_key] = task
-            task.add_done_callback(lambda _t, k=dedup_key: self._inflight_syncs.pop(k, None))
-            self._track_usage_sync_task(task)
-            return True
+            bucket = "heavy" if ModelService.is_heavy_bucket_model(model_id) else "normal"
+            return await self.consume(token_str, fallback_effort, bucket=bucket)
 
         # 管理操作（如手动刷新）仍保持同步语义。
+        bucket = "heavy" if ModelService.is_heavy_bucket_model(model_id) else "normal"
+        rate_limit_model = ModelService.rate_limit_model_for(model_id)
         synced = await self._sync_usage_from_api(
             token_str=token_str,
             target_token=target_token,

@@ -51,6 +51,13 @@ def test_import_uses_incremental_endpoint_and_indexed_dedupe():
     assert "flatTokens.some" not in body
 
 
+def test_import_and_save_do_not_show_background_nsfw_refresh_toasts():
+    source = _read_token_js()
+
+    assert "nsfw_refresh" not in _function_body(source, "addTokensToServer")
+    assert "nsfw_refresh" not in _function_body(source, "syncToServer")
+
+
 def test_batch_refresh_has_no_client_side_chunk_delay():
     source = _read_token_js()
     body = _function_body(source, "processBatchQueue")

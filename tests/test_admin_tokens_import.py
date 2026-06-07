@@ -65,21 +65,16 @@ class _DummyManager:
 def test_import_tokens_api_uses_targeted_add_without_full_save_or_reload(monkeypatch):
     storage = _DummyStorage(existing={"token-a"})
     mgr = _DummyManager()
-    captured = {}
 
     async def _fake_get_mgr():
         return mgr
 
-    def _fake_trigger(tokens, concurrency, retries):
-        captured["tokens"] = tokens
-        captured["concurrency"] = concurrency
-        captured["retries"] = retries
+    def _fail_refresh(*_args, **_kwargs):
+        raise AssertionError("import endpoint must not trigger account-settings refresh")
 
     monkeypatch.setattr(admin_module, "get_storage", lambda: storage)
     monkeypatch.setattr(admin_module, "get_token_manager", _fake_get_mgr)
-    monkeypatch.setattr(admin_module, "_trigger_account_settings_refresh_background", _fake_trigger)
-    monkeypatch.setattr(admin_module, "_resolve_nsfw_refresh_concurrency", lambda override=None: 10)
-    monkeypatch.setattr(admin_module, "_resolve_nsfw_refresh_retries", lambda override=None: 3)
+    monkeypatch.setattr(admin_module, "_trigger_account_settings_refresh_background", _fail_refresh, raising=False)
 
     result = asyncio.run(admin_module.import_tokens_api({
         "pool": "ssoBasic",
@@ -95,9 +90,7 @@ def test_import_tokens_api_uses_targeted_add_without_full_save_or_reload(monkeyp
     assert result["added"] == 2
     assert result["skipped"] == 1
     assert [item["token"] for item in result["tokens"]] == ["token-b", "token-c"]
-    assert captured["tokens"] == ["token-b", "token-c"]
-    assert captured["concurrency"] == 10
-    assert captured["retries"] == 3
+    assert "nsfw_refresh" not in result
     assert storage.save_tokens_calls == 0
     assert storage.add_calls[0][0] == "ssoBasic"
     assert [record["token"] for record in storage.add_calls[0][1]] == ["token-a", "token-b", "token-c"]
