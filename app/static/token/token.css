@@ -162,6 +162,23 @@
       display: inline-block;
     }
 
+    .batch-progress-track {
+      width: 120px;
+      height: 4px;
+      border-radius: 9999px;
+      background: #e5e7eb;
+      overflow: hidden;
+      flex: 0 0 120px;
+    }
+
+    .batch-progress-bar-fill {
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: #000;
+      transition: width 0.18s ease;
+    }
+
     .filter-chip {
       display: inline-flex;
       align-items: center;
@@ -331,6 +348,11 @@
         order: 3;
         align-items: center;
         flex-wrap: wrap;
+      }
+
+      #batch-actions .batch-progress-track {
+        width: 100%;
+        flex-basis: 100%;
       }
 
       #batch-actions #batch-progress .toolbar-sep {

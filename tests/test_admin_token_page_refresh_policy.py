@@ -57,3 +57,23 @@ def test_batch_refresh_has_no_client_side_chunk_delay():
 
     assert "setTimeout(" not in body
     assert "batchQueue.splice(0, batchQueue.length)" in body
+
+
+def test_batch_refresh_uses_streaming_progress_endpoint():
+    source = _read_token_js()
+    body = _function_body(source, "processBatchQueue")
+
+    assert "/api/v1/admin/tokens/refresh/stream" in body
+    assert "response.body.getReader()" in source
+    assert "readBatchRefreshStream(" in body
+    assert "applyBatchRefreshProgress(" in source
+
+
+def test_batch_progress_renders_counts_and_bar():
+    source = _read_token_js()
+
+    assert "batchSuccess" in source
+    assert "batchFailed" in source
+    assert "batch-progress-bar-fill" in source
+    assert "成功" in _function_body(source, "updateBatchProgress")
+    assert "失败" in _function_body(source, "updateBatchProgress")

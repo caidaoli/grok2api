@@ -5,7 +5,9 @@ Admin Token 管理路由
 import asyncio
 from typing import Any
 
+import orjson
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.core.auth import verify_app_key
 from app.core.config import get_config
@@ -133,6 +135,19 @@ def _collect_tokens_from_delete_payload(payload: Any) -> list[str]:
     return collected
 
 
+def _collect_tokens_from_refresh_payload(payload: Any) -> list[str]:
+    candidates: list[Any] = []
+    if isinstance(payload, dict):
+        if "token" in payload:
+            candidates.append(payload["token"])
+        if isinstance(payload.get("tokens"), list):
+            candidates.extend(payload["tokens"])
+
+    return list(dict.fromkeys(
+        token for token in (normalize_refresh_token(str(t or "")) for t in candidates) if token
+    ))
+
+
 def _collect_import_token_records(pool_name: str, payload: Any) -> list[dict]:
     raw_items: Any = []
     if isinstance(payload, dict):
@@ -238,6 +253,93 @@ def _trigger_account_settings_refresh_background(
             logger.warning("Background account-settings refresh failed: {}", exc)
 
     asyncio.create_task(_run())
+
+
+async def _refresh_one_token_usage(mgr: Any, token: str) -> bool:
+    ok = await mgr.sync_usage(
+        token,
+        "grok-3",
+        consume_on_fail=False,
+        is_usage=False,
+        retry=False,
+    )
+    if ok:
+        token_info, _ = mgr._find_token_info(token)
+        if token_info and token_info.status != TokenStatus.ACTIVE:
+            token_info.status = TokenStatus.ACTIVE
+    return bool(ok)
+
+
+def _encode_refresh_sse_event(payload: dict) -> str:
+    return f"data: {orjson.dumps(payload).decode()}\n\n"
+
+
+async def _iter_refresh_stream_events(mgr: Any, tokens: list[str], concurrency: int = 10):
+    total = len(tokens)
+    current = 0
+    success = 0
+    failed = 0
+    save_scheduled = False
+    refreshed_records: list[dict] = []
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _run(token: str) -> tuple[str, bool, str | None]:
+        async with sem:
+            try:
+                return token, await _refresh_one_token_usage(mgr, token), None
+            except Exception as exc:
+                logger.warning("Admin token stream refresh failed for {}: {}", token[-8:], exc)
+                return token, False, str(exc)
+
+    tasks = [asyncio.create_task(_run(token)) for token in tokens]
+    try:
+        for task in asyncio.as_completed(tasks):
+            token, ok, error = await task
+            current += 1
+            if ok:
+                success += 1
+            else:
+                failed += 1
+
+            event = {
+                "type": "progress",
+                "token": token,
+                "ok": ok,
+                "current": current,
+                "total": total,
+                "success": success,
+                "failed": failed,
+            }
+            if error:
+                event["error"] = error
+            if ok:
+                record = _find_manager_token_record(mgr, token)
+                if record:
+                    refreshed_records.append(record)
+                    event["record"] = record
+            yield _encode_refresh_sse_event(event)
+
+        if success > 0:
+            mgr._schedule_save()
+            save_scheduled = True
+
+        yield _encode_refresh_sse_event({
+            "type": "complete",
+            "current": current,
+            "total": total,
+            "success": success,
+            "failed": failed,
+            "tokens": refreshed_records,
+        })
+    finally:
+        if success > 0 and not save_scheduled:
+            mgr._schedule_save()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        pending = [task for task in tasks if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 # ==================== Routes ====================
@@ -402,35 +504,16 @@ async def refresh_tokens_api(data: dict):
     """刷新 Token 状态"""
     try:
         mgr = await get_token_manager()
-        tokens = []
-        if "token" in data:
-            tokens.append(data["token"])
-        if "tokens" in data and isinstance(data["tokens"], list):
-            tokens.extend(data["tokens"])
+        unique_tokens = _collect_tokens_from_refresh_payload(data)
 
-        if not tokens:
-             raise HTTPException(status_code=400, detail="No tokens provided")
-
-        unique_tokens = list(dict.fromkeys(
-            token for token in (normalize_refresh_token(str(t or "")) for t in tokens) if token
-        ))
+        if not unique_tokens:
+            raise HTTPException(status_code=400, detail="No tokens provided")
 
         sem = asyncio.Semaphore(10)
 
         async def _refresh_one(t):
             async with sem:
-                ok = await mgr.sync_usage(
-                    t,
-                    "grok-3",
-                    consume_on_fail=False,
-                    is_usage=False,
-                    retry=False,
-                )
-                if ok:
-                    token_info, _ = mgr._find_token_info(t)
-                    if token_info and token_info.status != TokenStatus.ACTIVE:
-                        token_info.status = TokenStatus.ACTIVE
-                return t, ok
+                return t, await _refresh_one_token_usage(mgr, t)
 
         results_list = await asyncio.gather(*[_refresh_one(t) for t in unique_tokens])
         results = dict(results_list)
@@ -444,9 +527,29 @@ async def refresh_tokens_api(data: dict):
             mgr._schedule_save()
 
         return {"status": "success", "results": results, "tokens": refreshed}
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Admin API error")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/api/v1/admin/tokens/refresh/stream", dependencies=[Depends(verify_app_key)])
+async def refresh_tokens_stream_api(data: dict):
+    """刷新 Token 状态，并通过长连接返回逐项进度。"""
+    mgr = await get_token_manager()
+    unique_tokens = _collect_tokens_from_refresh_payload(data)
+    if not unique_tokens:
+        raise HTTPException(status_code=400, detail="No tokens provided")
+
+    return StreamingResponse(
+        _iter_refresh_stream_events(mgr, unique_tokens),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/api/v1/admin/tokens/reset", dependencies=[Depends(verify_app_key)])

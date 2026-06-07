@@ -7,6 +7,9 @@ let isBatchPaused = false;
 let batchQueue = [];
 let batchTotal = 0;
 let batchProcessed = 0;
+let batchSuccess = 0;
+let batchFailed = 0;
+let batchAbortController = null;
 let currentBatchAction = null;
 let isWorkersRuntime = false;
 let isNsfwRefreshAllRunning = false;
@@ -1064,6 +1067,8 @@ async function startBatchRefresh() {
   batchQueue = Array.from(new Set(selected.map(t => normalizeSsoToken(t.token)).filter(t => t)));
   batchTotal = batchQueue.length;
   batchProcessed = 0;
+  batchSuccess = 0;
+  batchFailed = 0;
 
   updateBatchProgress();
   setActionButtonsState();
@@ -1080,37 +1085,130 @@ async function processBatchQueue() {
   }
 
   const chunk = batchQueue.splice(0, batchQueue.length);
+  batchAbortController = new AbortController();
 
   try {
-    const res = await fetch('/api/v1/admin/tokens/refresh', {
+    const response = await fetch('/api/v1/admin/tokens/refresh/stream', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...buildAuthHeaders(apiKey)
       },
-      body: JSON.stringify({ tokens: chunk })
+      body: JSON.stringify({ tokens: chunk }),
+      signal: batchAbortController.signal
     });
 
-    const payload = await parseJsonSafely(res);
-    if (res.ok) {
-      mergeTokenRecords(payload?.tokens || []);
-      batchProcessed += chunk.length;
-    } else {
-      showToast(`部分刷新失败: ${extractApiErrorMessage(payload, '请求失败')}`, 'error');
-      batchProcessed += chunk.length;
+    if (!response.ok) {
+      const payload = await parseJsonSafely(response);
+      markRemainingBatchRefreshFailed();
+      updateBatchProgress();
+      showToast(`刷新失败: ${extractApiErrorMessage(payload, '请求失败')}`, 'error');
+      finishBatchProcess(true);
+      return;
     }
+
+    if (!response.body) {
+      markRemainingBatchRefreshFailed();
+      updateBatchProgress();
+      showToast('刷新失败: 浏览器不支持流式进度', 'error');
+      finishBatchProcess(true);
+      return;
+    }
+
+    await readBatchRefreshStream(response);
   } catch (e) {
-    showToast('网络请求错误', 'error');
-    batchProcessed += chunk.length;
+    if (e && e.name === 'AbortError') {
+      if (isBatchProcessing) finishBatchProcess(true);
+      return;
+    }
+    showToast(e?.message ? `刷新失败: ${e.message}` : '网络请求错误', 'error');
+    markRemainingBatchRefreshFailed();
+    updateBatchProgress();
+    finishBatchProcess(true);
+    return;
+  } finally {
+    batchAbortController = null;
   }
-  updateBatchProgress();
 
   if (!isBatchProcessing || isBatchPaused) return;
-  processBatchQueue();
+  finishBatchProcess();
+}
+
+async function readBatchRefreshStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeBatchRefreshSseBuffer(buffer);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    consumeBatchRefreshSseBuffer(`${buffer}\n\n`);
+  }
+}
+
+function consumeBatchRefreshSseBuffer(buffer) {
+  let rest = buffer;
+  let splitAt = rest.indexOf('\n\n');
+  while (splitAt >= 0) {
+    const block = rest.slice(0, splitAt);
+    rest = rest.slice(splitAt + 2);
+    handleBatchRefreshSseBlock(block);
+    splitAt = rest.indexOf('\n\n');
+  }
+  return rest;
+}
+
+function handleBatchRefreshSseBlock(block) {
+  const data = String(block || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trim())
+    .join('\n');
+  if (!data) return;
+
+  try {
+    applyBatchRefreshProgress(JSON.parse(data));
+  } catch (e) {
+    console.error('Invalid refresh progress event', e);
+  }
+}
+
+function applyBatchRefreshProgress(event) {
+  if (!event || typeof event !== 'object') return;
+
+  if (Number.isFinite(Number(event.total))) batchTotal = Number(event.total);
+  if (Number.isFinite(Number(event.current))) batchProcessed = Number(event.current);
+  if (Number.isFinite(Number(event.success))) batchSuccess = Number(event.success);
+  if (Number.isFinite(Number(event.failed))) batchFailed = Number(event.failed);
+
+  if (event.record) {
+    mergeTokenRecords([event.record]);
+  } else if (Array.isArray(event.tokens) && event.tokens.length > 0) {
+    mergeTokenRecords(event.tokens);
+  }
+
+  updateBatchProgress();
+}
+
+function markRemainingBatchRefreshFailed() {
+  const remaining = Math.max(0, batchTotal - batchProcessed);
+  batchProcessed += remaining;
+  batchFailed += remaining;
 }
 
 function toggleBatchPause() {
   if (!isBatchProcessing) return;
+  if (currentBatchAction === 'refresh') {
+    showToast('流式刷新不支持暂停，可直接终止任务', 'info');
+    return;
+  }
   isBatchPaused = !isBatchPaused;
   updateBatchProgress();
   if (!isBatchPaused && currentBatchAction === 'refresh') {
@@ -1120,6 +1218,9 @@ function toggleBatchPause() {
 
 function stopBatchRefresh() {
   if (!isBatchProcessing) return;
+  if (batchAbortController) {
+    batchAbortController.abort();
+  }
   finishBatchProcess(true);
 }
 
@@ -1128,6 +1229,7 @@ function finishBatchProcess(aborted = false) {
   isBatchProcessing = false;
   isBatchPaused = false;
   batchQueue = [];
+  batchAbortController = null;
   currentBatchAction = null;
 
   updateBatchProgress();
@@ -1137,7 +1239,11 @@ function finishBatchProcess(aborted = false) {
   if (aborted) {
     showToast(action === 'delete' ? '已终止删除' : '已终止刷新', 'info');
   } else {
-    showToast(action === 'delete' ? '删除完成' : '刷新完成', 'success');
+    if (action === 'refresh') {
+      showToast(`刷新完成：成功 ${batchSuccess}，失败 ${batchFailed}`, batchFailed > 0 ? 'info' : 'success');
+    } else {
+      showToast('删除完成', 'success');
+    }
   }
 }
 
@@ -1148,21 +1254,32 @@ async function batchUpdate() {
 function updateBatchProgress() {
   const container = document.getElementById('batch-progress');
   const text = document.getElementById('batch-progress-text');
+  const fill = document.getElementById('batch-progress-bar-fill');
   const pauseBtn = document.getElementById('btn-pause-action');
   const stopBtn = document.getElementById('btn-stop-action');
   if (!container || !text) return;
   if (!isBatchProcessing) {
     container.classList.add('hidden');
+    if (fill) fill.style.width = '0%';
     if (pauseBtn) pauseBtn.classList.add('hidden');
     if (stopBtn) stopBtn.classList.add('hidden');
     return;
   }
   const pct = batchTotal ? Math.floor((batchProcessed / batchTotal) * 100) : 0;
-  text.textContent = `${pct}%`;
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  if (currentBatchAction === 'refresh') {
+    text.textContent = `${batchProcessed}/${batchTotal} (${pct}%) · 成功 ${batchSuccess} · 失败 ${batchFailed}`;
+  } else {
+    text.textContent = `${batchProcessed}/${batchTotal} (${pct}%)`;
+  }
   container.classList.remove('hidden');
   if (pauseBtn) {
-    pauseBtn.textContent = isBatchPaused ? '继续' : '暂停';
-    pauseBtn.classList.remove('hidden');
+    if (currentBatchAction === 'refresh') {
+      pauseBtn.classList.add('hidden');
+    } else {
+      pauseBtn.textContent = isBatchPaused ? '继续' : '暂停';
+      pauseBtn.classList.remove('hidden');
+    }
   }
   if (stopBtn) stopBtn.classList.remove('hidden');
 }
@@ -1193,6 +1310,8 @@ async function startBatchDelete() {
   currentBatchAction = 'delete';
   batchTotal = selected.length;
   batchProcessed = 0;
+  batchSuccess = 0;
+  batchFailed = 0;
 
   updateBatchProgress();
   setActionButtonsState();

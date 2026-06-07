@@ -10,7 +10,7 @@
   <link href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans/index.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/@fontsource/geist-mono/index.css" rel="stylesheet">
   <link href="/static/common/common.css?v=4" rel="stylesheet">
-  <link href="/static/token/token.css?v=12" rel="stylesheet">
+  <link href="/static/token/token.css?v=13" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
 </head>
 
@@ -193,6 +193,9 @@
     </div>
     <div id="batch-progress" class="hidden text-xs text-[var(--accents-5)] flex items-center gap-2">
       <span class="toolbar-sep"></span>
+      <div class="batch-progress-track" aria-hidden="true">
+        <div id="batch-progress-bar-fill" class="batch-progress-bar-fill"></div>
+      </div>
       <span id="batch-progress-text"></span>
       <button id="btn-pause-action" type="button" class="batch-link hidden" onclick="toggleBatchPause()">暂停</button>
       <button id="btn-stop-action" type="button" class="batch-link hidden" onclick="stopBatchRefresh()">终止</button>
@@ -337,7 +340,7 @@
   <script src="/static/common/header.js?v=3"></script>
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
-  <script src="/static/token/token.js?v=17"></script>
+  <script src="/static/token/token.js?v=18"></script>
 </body>
 
 </html>
