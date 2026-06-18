@@ -8,7 +8,6 @@ import os
 import time
 import hashlib
 import re
-import uuid
 import ipaddress
 import socket
 from pathlib import Path
@@ -31,7 +30,6 @@ from app.core.exceptions import (
     UpstreamException, 
     ValidationException
 )
-from app.services.grok.statsig import StatsigService
 from app.services.grok.headers import build_grok_headers
 
 
@@ -143,7 +141,6 @@ MIME_TYPES = {
 }
 
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
-VIDEO_EXTS = {'.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv'}
 
 
 # ==================== 基础服务 ====================
@@ -923,22 +920,6 @@ class DownloadService(BaseService):
                 logger.info(f"Cache cleanup: deleted {deleted_count} files ({deleted_size/1024/1024:.2f}MB)")
         finally:
             self._cleanup_running = False
-
-    def get_public_url(self, file_path: str) -> str:
-        """
-        获取文件的公共访问 URL
-        
-        如果配置了 app_url，则返回自托管 URL，否则返回 Grok 原始 URL
-        """
-        app_url = get_config("app.app_url", "")
-        if not app_url:
-            return f"{DOWNLOAD_API}{file_path if file_path.startswith('/') else '/' + file_path}"
-            
-        if not file_path.startswith("/"):
-            file_path = f"/{file_path}"
-            
-        # 自动添加 /v1/files 前缀
-        return f"{app_url.rstrip('/')}/v1/files{file_path}"
 
 
 __all__ = [

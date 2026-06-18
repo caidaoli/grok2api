@@ -6,12 +6,11 @@ import asyncio
 import time
 from typing import Dict
 
-import orjson
 from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
 from app.core.config import get_config
-from app.core.exceptions import UpstreamException, AppException
+from app.core.exceptions import UpstreamException
 from app.services.grok.headers import build_grok_headers
 from app.services.grok.retry import retry_on_status
 

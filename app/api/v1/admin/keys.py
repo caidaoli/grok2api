@@ -5,7 +5,6 @@ Admin API Key 管理路由
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import verify_app_key
-from app.core.logger import logger
 from app.services.api_keys import api_key_manager
 from app.api.v1.admin.common import _display_key, _normalize_limit
 

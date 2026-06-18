@@ -5,10 +5,8 @@ Grok 模型管理服务
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Optional
 from pydantic import BaseModel, Field
-
-from app.core.exceptions import ValidationException
 
 
 class Tier(str, Enum):
@@ -187,14 +185,6 @@ class ModelService:
         return cls.get(model_id) is not None
 
     @classmethod
-    def to_grok(cls, model_id: str) -> Tuple[str, str]:
-        """转换为 Grok 参数"""
-        model = cls.get(model_id)
-        if not model:
-            raise ValidationException(f"Invalid model ID: {model_id}")
-        return model.grok_model, model.model_mode
-
-    @classmethod
     def rate_limit_model_for(cls, model_id: str) -> str:
         """用于 /rest/rate-limits 的 modelName 映射。"""
         model = cls.get(model_id)
@@ -204,14 +194,6 @@ class ModelService:
     def is_heavy_bucket_model(cls, model_id: str) -> bool:
         """是否使用 heavy 配额桶。"""
         return False
-
-    @classmethod
-    def pool_for_model(cls, model_id: str) -> str:
-        """根据模型选择 Token 池"""
-        model = cls.get(model_id)
-        if model and model.tier == Tier.SUPER:
-            return "ssoSuper"
-        return "ssoBasic"
 
     @classmethod
     def pool_candidates_for_model(cls, model_id: str) -> list[str]:

@@ -70,11 +70,7 @@ class TokenInfo(BaseModel):
     tags: List[str] = Field(default_factory=list)
     note: str = ""
     last_asset_clear_at: Optional[int] = None
-    
-    def is_available(self) -> bool:
-        """检查是否可用（状态正常且配额 > 0）"""
-        return self.status == TokenStatus.ACTIVE and self.quota > 0
-    
+
     def consume(self, effort: EffortType = EffortType.LOW) -> int:
         """
         消耗配额

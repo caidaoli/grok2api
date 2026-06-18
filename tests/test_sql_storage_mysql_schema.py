@@ -58,8 +58,3 @@ def _run_ensure_schema(dialect: str) -> str:
 def test_mysql_schema_should_use_191_char_primary_key_for_utf8mb4_limits():
     ddl = _run_ensure_schema("mysql")
     assert "token varchar(191) primary key" in ddl
-
-
-def test_pgsql_schema_should_keep_512_char_primary_key():
-    ddl = _run_ensure_schema("pgsql")
-    assert "token varchar(512) primary key" in ddl

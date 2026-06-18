@@ -247,12 +247,7 @@ class ChatRequest:
 
 class MessageExtractor:
     """消息内容提取器"""
-    
-    # 需要上传的类型
-    UPLOAD_TYPES = {"image_url", "input_audio", "file"}
-    # 视频模式不支持的类型
-    VIDEO_UNSUPPORTED = {"input_audio", "file"}
-    
+
     @staticmethod
     def extract(messages: List[Dict[str, Any]], is_video: bool = False) -> tuple[str, List[str]]:
         """
@@ -344,12 +339,6 @@ class MessageExtractor:
         # 换行拼接文本
         message = "\n\n".join(texts)
         return message, attachments
-    
-    @staticmethod
-    def extract_text_only(messages: List[Dict[str, Any]]) -> str:
-        """仅提取文本内容"""
-        text, _ = MessageExtractor.extract(messages, is_video=True)
-        return text
 
 
 class ChatRequestBuilder:

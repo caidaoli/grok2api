@@ -7,7 +7,7 @@ from contextlib import suppress
 from typing import Dict, List, Optional, Any, Coroutine
 
 from app.core.logger import logger
-from app.services.token.models import TokenInfo, EffortType, TokenPoolStats, FAIL_THRESHOLD, TokenStatus, _now_ms
+from app.services.token.models import TokenInfo, EffortType, FAIL_THRESHOLD, TokenStatus, _now_ms
 from app.core.storage import get_storage
 from app.core.config import get_config
 from app.services.token.pool import TokenPool
@@ -374,22 +374,6 @@ class TokenManager:
             return token[4:]
         return token
 
-    def get_token_for_model(self, model_id: str, exclude: Optional[set] = None) -> Optional[str]:
-        """按模型选择可用 Token（包含 basic->super 回退与 heavy 配额桶选择）。"""
-        bucket = "heavy" if ModelService.is_heavy_bucket_model(model_id) else "normal"
-        for pool_name in ModelService.pool_candidates_for_model(model_id):
-            pool = self.pools.get(pool_name)
-            if not pool:
-                continue
-            token_info = pool.select(bucket=bucket, exclude=exclude)
-            if not token_info:
-                continue
-            token = token_info.token
-            return token[4:] if token.startswith("sso=") else token
-
-        logger.warning(f"No available token for model '{model_id}'")
-        return None
-
     async def consume(self, token_str: str, effort: EffortType = EffortType.LOW, bucket: str = "normal") -> bool:
         """
         消耗配额（本地预估）
@@ -690,7 +674,7 @@ class TokenManager:
                 logger.info(f"Pool '{pool_name}': token removed")
                 return True
         
-        logger.warning(f"Token not found for removal")
+        logger.warning("Token not found for removal")
         return False
 
     def remove_tokens(self, tokens: list[str]) -> int:
@@ -711,17 +695,6 @@ class TokenManager:
         if removed:
             self._last_reload_at = time.monotonic()
         return removed
-
-    async def reset_all(self):
-        """重置所有 Token 配额"""
-        count = 0
-        for pool in self.pools.values():
-            for token in pool:
-                token.reset()
-                count += 1
-        
-        await self._save()
-        logger.info(f"Reset all: {count} tokens updated")
 
     async def reset_token(self, token_str: str) -> bool:
         """
@@ -753,21 +726,6 @@ class TokenManager:
             pool_stats = pool.get_stats()
             stats[name] = pool_stats.model_dump()
         return stats
-    
-    def get_pool_tokens(self, pool_name: str = "ssoBasic") -> List[TokenInfo]:
-        """
-        获取指定池的所有 Token
-        
-        Args:
-            pool_name: 池名称
-            
-        Returns:
-            Token 列表
-        """
-        pool = self.pools.get(pool_name)
-        if not pool:
-            return []
-        return pool.list()
     
     async def refresh_cooling_tokens(self) -> Dict[str, int]:
         """

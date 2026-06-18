@@ -17,7 +17,9 @@ env_file = Path(__file__).parent / ".env"
 if env_file.exists():
     load_dotenv(env_file)
 
-from fastapi import FastAPI, Request
+# 以下 import 必须在 load_dotenv 之后：app.core.paths 在 import 时即读取 SERVER_DATA_DIR
+# ruff: noqa: E402
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
 from fastapi.responses import FileResponse

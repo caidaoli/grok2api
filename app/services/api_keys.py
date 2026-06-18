@@ -9,7 +9,6 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Tuple
 
 from app.core.logger import logger
-from app.core.config import get_config
 from app.core.paths import DATA_DIR
 
 
@@ -238,27 +237,6 @@ class ApiKeyManager:
         logger.info(f"[ApiKey] 添加新Key: {name_val}")
         return new_key
 
-    async def batch_add_keys(self, name_prefix: str, count: int) -> List[Dict]:
-        """批量添加 API Key"""
-        new_keys = []
-        for i in range(1, count + 1):
-            name = f"{name_prefix}-{i}" if count > 1 else name_prefix
-            new_keys.append({
-                "key": self.generate_key(),
-                "name": name,
-                "created_at": int(time.time()),
-                "is_active": True,
-                "chat_limit": -1,
-                "heavy_limit": -1,
-                "image_limit": -1,
-                "video_limit": -1,
-            })
-        
-        self._keys.extend(new_keys)
-        await self._save_data()
-        logger.info(f"[ApiKey] 批量添加 {count} 个 Key, 前缀: {name_prefix}")
-        return new_keys
-
     async def delete_key(self, key: str) -> bool:
         """删除 API Key"""
         initial_len = len(self._keys)
@@ -270,17 +248,6 @@ class ApiKeyManager:
             return True
         return False
 
-    async def batch_delete_keys(self, keys: List[str]) -> int:
-        """批量删除 API Key"""
-        initial_len = len(self._keys)
-        self._keys = [k for k in self._keys if k["key"] not in keys]
-        
-        deleted_count = initial_len - len(self._keys)
-        if deleted_count > 0:
-            await self._save_data()
-            logger.info(f"[ApiKey] 批量删除 {deleted_count} 个 Key")
-        return deleted_count
-
     async def update_key_status(self, key: str, is_active: bool) -> bool:
         """更新 Key 状态"""
         for k in self._keys:
@@ -290,20 +257,6 @@ class ApiKeyManager:
                 return True
         return False
         
-    async def batch_update_keys_status(self, keys: List[str], is_active: bool) -> int:
-        """批量更新 Key 状态"""
-        updated_count = 0
-        for k in self._keys:
-            if k["key"] in keys:
-                if k["is_active"] != is_active:
-                    k["is_active"] = is_active
-                    updated_count += 1
-        
-        if updated_count > 0:
-            await self._save_data()
-            logger.info(f"[ApiKey] 批量更新 {updated_count} 个 Key 状态为: {is_active}")
-        return updated_count
-
     async def update_key_name(self, key: str, name: str) -> bool:
         """更新 Key 备注"""
         for k in self._keys:
@@ -418,27 +371,6 @@ class ApiKeyManager:
 
         self._schedule_usage_save()
         return True
-
-    def validate_key(self, key: str) -> Optional[Dict]:
-        """验证 Key，返回 Key 信息"""
-        # 1. 检查全局配置的 Key (作为默认 admin key)
-        global_key = str(get_config("app.api_key", "") or "").strip()
-        if global_key and key == global_key:
-            return {
-                "key": global_key,
-                "name": "默认管理员",
-                "is_active": True,
-                "is_admin": True
-            }
-            
-        # 2. 检查多 Key 列表
-        for k in self._keys:
-            if k["key"] == key:
-                if k["is_active"]:
-                    return {**k, "is_admin": False} # 普通 Key 也可以视为非管理员? 暂不区分权限，只做身份识别
-                return None
-                
-        return None
 
     def get_all_keys(self) -> List[Dict]:
         """获取所有 Keys"""

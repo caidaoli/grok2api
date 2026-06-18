@@ -1,6 +1,5 @@
 import os
 import socket
-import sys
 import time
 from urllib.parse import urlparse
 

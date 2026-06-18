@@ -189,10 +189,6 @@ class BaseStorage(abc.ABC):
         # 默认空实现，用于 fallback
         yield
 
-    async def verify_connection(self) -> bool:
-        """健康检查"""
-        return True
-
 
 class LocalStorage(BaseStorage):
     """
@@ -265,7 +261,8 @@ class LocalStorage(BaseStorage):
         try:
             lines = []
             for section, items in data.items():
-                if not isinstance(items, dict): continue
+                if not isinstance(items, dict):
+                    continue
                 lines.append(f"[{section}]")
                 for key, val in items.items():
                     if isinstance(val, bool):
@@ -332,8 +329,7 @@ class SQLStorage(BaseStorage):
 
     def __init__(self, url: str):
         try:
-            from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-            from sqlalchemy import text, MetaData
+            from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
         except ImportError:
             raise ImportError("需要安装 sqlalchemy 和 async 驱动: pip install sqlalchemy[asyncio]")
 
@@ -377,7 +373,8 @@ class SQLStorage(BaseStorage):
 
     async def _ensure_schema(self):
         """确保数据库表存在"""
-        if self._initialized: return
+        if self._initialized:
+            return
         from sqlalchemy import text
 
         # Fast path: single query probes both tables in one roundtrip
@@ -461,11 +458,13 @@ class SQLStorage(BaseStorage):
             async with self.async_session() as session:
                 res = await session.execute(text("SELECT section, key_name, value FROM app_config"))
                 rows = res.fetchall()
-                if not rows: return None
+                if not rows:
+                    return None
                 
                 config = {}
                 for section, key, val_str in rows:
-                    if section not in config: config[section] = {}
+                    if section not in config:
+                        config[section] = {}
                     try:
                         val = json_loads(val_str)
                     except (ValueError, TypeError):
@@ -527,11 +526,13 @@ class SQLStorage(BaseStorage):
             async with self.async_session() as session:
                 res = await session.execute(text("SELECT pool_name, data FROM tokens"))
                 rows = res.fetchall()
-                if not rows: return {}
+                if not rows:
+                    return {}
                 
                 pools = {}
                 for pool_name, data_json in rows:
-                    if pool_name not in pools: pools[pool_name] = []
+                    if pool_name not in pools:
+                        pools[pool_name] = []
                     
                     try:
                         if isinstance(data_json, str):
@@ -706,7 +707,8 @@ class StorageFactory:
         logger.info(f"StorageFactory: 初始化存储后端: {storage_type}")
         
         if storage_type == "mysql":
-            if not storage_url: raise ValueError("MySQL 存储需要设置 SERVER_STORAGE_URL")
+            if not storage_url:
+                raise ValueError("MySQL 存储需要设置 SERVER_STORAGE_URL")
             cls._instance = SQLStorage(storage_url)
 
         else:

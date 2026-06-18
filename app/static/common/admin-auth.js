@@ -216,11 +216,7 @@ function formatStorageLabel(type) {
   const map = {
     local: 'local',
     mysql: 'mysql',
-    pgsql: 'pgsql',
-    postgres: 'pgsql',
-    postgresql: 'pgsql',
-    d1: 'd1',
-    redis: 'redis'
+    d1: 'd1'
   };
   return map[normalized] || '-';
 }

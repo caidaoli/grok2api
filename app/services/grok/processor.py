@@ -15,9 +15,6 @@ from app.services.grok.assets import DownloadService
 from app.services.grok.tokenizer import count_text_tokens
 
 
-ASSET_URL = "https://assets.grok.com/"
-
-
 def _count_tokens(text: str) -> int:
     """Count tokens, falling back to an estimate when tiktoken is unavailable."""
     return count_text_tokens(text)

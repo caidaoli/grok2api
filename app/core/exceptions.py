@@ -2,7 +2,7 @@
 全局异常处理 - OpenAI 兼容错误格式
 """
 
-from typing import Any, Optional
+from typing import Any
 from enum import Enum
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
