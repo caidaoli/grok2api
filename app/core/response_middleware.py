@@ -18,6 +18,7 @@ from starlette.routing import Match
 
 from app.core.config import get_config
 from app.core.logger import logger
+from app.core.paths import DATA_DIR
 
 class ResponseLoggerMiddleware(BaseHTTPMiddleware):
     """
@@ -27,7 +28,7 @@ class ResponseLoggerMiddleware(BaseHTTPMiddleware):
 
     _banned_ips: frozenset[str] = frozenset()
     _banned_lock = asyncio.Lock()
-    _ban_file_path: Path = Path(__file__).parent.parent.parent / "data" / "banned_ips.txt"
+    _ban_file_path: Path = DATA_DIR / "banned_ips.txt"
     _banned_ips_loaded: bool = False
     _banned_ips_file_mtime: float | None = None
     _banned_file_checked_at: float = 0.0

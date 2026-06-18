@@ -7,10 +7,10 @@ import secrets
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Tuple
-from pathlib import Path
 
 from app.core.logger import logger
 from app.core.config import get_config
+from app.core.paths import DATA_DIR
 
 
 class ApiKeyManager:
@@ -27,8 +27,8 @@ class ApiKeyManager:
         if hasattr(self, '_initialized'):
             return
             
-        self.file_path = Path(__file__).parents[2] / "data" / "api_keys.json"
-        self.usage_path = Path(__file__).parents[2] / "data" / "api_key_usage.json"
+        self.file_path = DATA_DIR / "api_keys.json"
+        self.usage_path = DATA_DIR / "api_key_usage.json"
         self._keys: List[Dict] = []
         self._lock = asyncio.Lock()
         self._loaded = False

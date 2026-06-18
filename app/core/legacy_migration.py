@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from app.core.logger import logger
+from app.core.paths import get_data_dir
 
 
 def migrate_legacy_cache_dirs(data_dir: Path | None = None) -> Dict[str, Any]:
@@ -26,7 +27,7 @@ def migrate_legacy_cache_dirs(data_dir: Path | None = None) -> Dict[str, Any]:
     This keeps existing cached files (not yet cleaned) available after upgrades.
     """
 
-    data_root = data_dir or (Path(__file__).parent.parent.parent / "data")
+    data_root = data_dir or get_data_dir()
     legacy_root = data_root / "temp"
     current_root = data_root / "tmp"
 
@@ -130,7 +131,7 @@ async def migrate_legacy_account_settings(
     This is best-effort and guarded by a cross-process lock + done marker.
     """
 
-    data_root = data_dir or (Path(__file__).parent.parent.parent / "data")
+    data_root = data_dir or get_data_dir()
     lock_dir = data_root / ".locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
 

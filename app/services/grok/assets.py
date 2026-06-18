@@ -25,6 +25,7 @@ from curl_cffi.requests import AsyncSession
 
 from app.core.logger import logger
 from app.core.config import get_config
+from app.core.paths import DATA_DIR
 from app.core.exceptions import (
     AppException, 
     UpstreamException, 
@@ -40,7 +41,7 @@ UPLOAD_API = "https://grok.com/rest/app-chat/upload-file"
 LIST_API = "https://grok.com/rest/assets"
 DELETE_API = "https://grok.com/rest/assets-metadata"
 DOWNLOAD_API = "https://assets.grok.com"
-LOCK_DIR = Path(__file__).parent.parent.parent.parent / "data" / ".locks"
+LOCK_DIR = DATA_DIR / ".locks"
 
 TIMEOUT = 120
 BROWSER = "chrome136"
@@ -608,8 +609,8 @@ class DownloadService(BaseService):
 
     def __init__(self, proxy: str = None):
         super().__init__(proxy)
-        self.base_dir = Path(__file__).parent.parent.parent.parent / "data" / "tmp"
-        self.legacy_base_dir = Path(__file__).parent.parent.parent.parent / "data" / "temp"
+        self.base_dir = DATA_DIR / "tmp"
+        self.legacy_base_dir = DATA_DIR / "temp"
         self.legacy_image_dir = self.legacy_base_dir / "image"
         self.legacy_video_dir = self.legacy_base_dir / "video"
         self.image_dir = self.base_dir / "image"

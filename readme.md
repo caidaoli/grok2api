@@ -126,6 +126,7 @@ python scripts/smoke_test.py --base-url http://127.0.0.1:8000
 | `SERVER_WORKERS`      | Uvicorn worker 数量                                 | `1`       | `2`                                               |
 | `SERVER_STORAGE_TYPE` | 存储类型（`local`/`redis`/`mysql`/`pgsql`） | `local`   | `pgsql`                                           |
 | `SERVER_STORAGE_URL`  | 存储连接串（local 时可为空）                        | `""`      | `postgresql+asyncpg://user:password@host:5432/db` |
+| `SERVER_DATA_DIR`     | 本地数据目录（config/token/缓存/统计等）；相对路径锚定到项目根。改动后 Docker 需同步调整卷挂载 | `data`（项目根下） | `/var/lib/grok2api`                       |
 
 ### 配置文件与升级迁移
 

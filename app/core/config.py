@@ -11,9 +11,10 @@ from typing import Any, Dict
 import tomllib
 
 from app.core.logger import logger
+from app.core.paths import DATA_DIR
 
 DEFAULT_CONFIG_FILE = Path(__file__).parent.parent.parent / "config.defaults.toml"
-LEGACY_CONFIG_FILE = Path(__file__).parent.parent.parent / "data" / "setting.toml"
+LEGACY_CONFIG_FILE = DATA_DIR / "setting.toml"
 
 
 def _as_str(v: Any) -> str:

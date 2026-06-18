@@ -121,6 +121,7 @@ Pages:
 | `SERVER_WORKERS` | Uvicorn worker count | `1` | `2` |
 | `SERVER_STORAGE_TYPE` | Storage type (`local`/`redis`/`mysql`/`pgsql`) | `local` | `pgsql` |
 | `SERVER_STORAGE_URL` | Storage URL (empty for local) | `""` | `postgresql+asyncpg://user:password@host:5432/db` |
+| `SERVER_DATA_DIR` | Local data dir (config/token/cache/stats/...); relative paths are anchored to project root. Adjust the Docker volume mount if you change it | `data` (under project root) | `/var/lib/grok2api` |
 
 ### Usage limits
 

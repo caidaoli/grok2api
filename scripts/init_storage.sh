@@ -2,7 +2,8 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-DATA_DIR="$ROOT_DIR/data"
+# 数据目录:默认 <项目根>/data,可用 SERVER_DATA_DIR 覆盖(与应用保持一致)。
+DATA_DIR="${SERVER_DATA_DIR:-$ROOT_DIR/data}"
 LOG_DIR="$ROOT_DIR/logs"
 TMP_DIR="$DATA_DIR/tmp"
 DEFAULT_CONFIG="$ROOT_DIR/config.defaults.toml"

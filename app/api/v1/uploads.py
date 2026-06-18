@@ -3,17 +3,17 @@ Uploads API (used by the web chat UI)
 """
 
 import uuid
-from pathlib import Path
 
 import aiofiles
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
+from app.core.paths import DATA_DIR
 from app.services.grok.assets import DownloadService
 
 
 router = APIRouter(tags=["Uploads"])
 
-BASE_DIR = Path(__file__).parent.parent.parent.parent / "data" / "tmp"
+BASE_DIR = DATA_DIR / "tmp"
 IMAGE_DIR = BASE_DIR / "image"
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 

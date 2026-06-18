@@ -9,13 +9,13 @@ import hashlib
 import hmac
 import json
 import time
-from pathlib import Path
 from typing import Optional, Set
 
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import get_config
+from app.core.paths import DATA_DIR
 
 # 定义 Bearer Scheme
 security = HTTPBearer(
@@ -24,7 +24,7 @@ security = HTTPBearer(
     description="Enter your API Key in the format: Bearer <key>",
 )
 
-LEGACY_API_KEYS_FILE = Path(__file__).parent.parent.parent / "data" / "api_keys.json"
+LEGACY_API_KEYS_FILE = DATA_DIR / "api_keys.json"
 _legacy_api_keys_cache: Set[str] | None = None
 _legacy_api_keys_mtime: float | None = None
 _legacy_api_keys_lock = asyncio.Lock()

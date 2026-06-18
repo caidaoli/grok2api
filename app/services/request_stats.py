@@ -4,11 +4,11 @@ import asyncio
 import orjson
 from datetime import datetime
 from typing import Dict, Any
-from pathlib import Path
 from collections import defaultdict
 from contextlib import suppress
 
 from app.core.logger import logger
+from app.core.paths import DATA_DIR
 
 
 class RequestStats:
@@ -25,7 +25,7 @@ class RequestStats:
         if hasattr(self, '_initialized'):
             return
         
-        self.file_path = Path(__file__).parents[2] / "data" / "stats.json"
+        self.file_path = DATA_DIR / "stats.json"
         
         # 统计数据
         self._hourly: Dict[str, Dict[str, int]] = defaultdict(lambda: {"total": 0, "success": 0, "failed": 0})

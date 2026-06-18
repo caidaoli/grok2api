@@ -27,11 +27,12 @@ from contextlib import asynccontextmanager
 import orjson
 import aiofiles
 from app.core.logger import logger
+from app.core.paths import DATA_DIR
 
 # 配置文件路径
-CONFIG_FILE = Path(__file__).parent.parent.parent / "data" / "config.toml"
-TOKEN_FILE = Path(__file__).parent.parent.parent / "data" / "token.json"
-LOCK_DIR = Path(__file__).parent.parent.parent / "data" / ".locks"
+CONFIG_FILE = DATA_DIR / "config.toml"
+TOKEN_FILE = DATA_DIR / "token.json"
+LOCK_DIR = DATA_DIR / ".locks"
 
 # JSON 序列化优化助手函数
 def json_dumps(obj: Any) -> str:
