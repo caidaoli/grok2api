@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import verify_app_key
 from app.core.config import get_config
 from app.core.logger import logger
-from app.core.storage import get_storage, LocalStorage, RedisStorage, SQLStorage
+from app.core.storage import get_storage, LocalStorage, SQLStorage
 
 router = APIRouter()
 
@@ -28,15 +28,8 @@ async def get_storage_info():
         storage = get_storage()
         if isinstance(storage, LocalStorage):
             storage_type = "local"
-        elif isinstance(storage, RedisStorage):
-            storage_type = "redis"
         elif isinstance(storage, SQLStorage):
-            if storage.dialect in ("mysql", "mariadb"):
-                storage_type = "mysql"
-            elif storage.dialect in ("postgres", "postgresql", "pgsql"):
-                storage_type = "pgsql"
-            else:
-                storage_type = storage.dialect
+            storage_type = "mysql"
     return {"type": storage_type or "local"}
 
 

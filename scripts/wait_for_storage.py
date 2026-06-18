@@ -6,9 +6,7 @@ from urllib.parse import urlparse
 
 
 DEFAULT_PORTS: dict[str, int] = {
-    "redis": 6379,
     "mysql": 3306,
-    "pgsql": 5432,
 }
 
 

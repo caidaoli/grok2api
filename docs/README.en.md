@@ -58,7 +58,7 @@ python scripts/smoke_test.py --base-url http://127.0.0.1:8000
 
 > If `docker compose up -d` fails with `denied` while pulling: the GHCR image is not publicly pullable (private or requires auth). Run `docker login ghcr.io`, or set `GROK2API_IMAGE` in `.env` to your own public image; alternatively use `--build` to build from source.
 
-> Optional: copy `.env.example` to `.env` to configure port/logging/storage. You can also set `COMPOSE_PROFILES` to enable `redis/pgsql/mysql` with one compose file (see examples in `.env.example`).
+> Optional: copy `.env.example` to `.env` to configure port/logging/storage. You can also set `COMPOSE_PROFILES=mysql` to enable MySQL with one compose file (see examples in `.env.example`).
 
 > Deployment consistency: Local (FastAPI), Docker, and Cloudflare Workers share the same admin behavior semantics (token filters, API key management, and admin API responses).
 > Cloudflare keeps one-click deployment via `.github/workflows/cloudflare-workers.yml` (with the two required secrets configured), and Docker keeps one-command startup via `docker compose up -d`.
@@ -119,8 +119,8 @@ Pages:
 | `SERVER_HOST` | Bind address | `0.0.0.0` | `0.0.0.0` |
 | `SERVER_PORT` | Service port | `8000` | `8000` |
 | `SERVER_WORKERS` | Uvicorn worker count | `1` | `2` |
-| `SERVER_STORAGE_TYPE` | Storage type (`local`/`redis`/`mysql`/`pgsql`) | `local` | `pgsql` |
-| `SERVER_STORAGE_URL` | Storage URL (empty for local) | `""` | `postgresql+asyncpg://user:password@host:5432/db` |
+| `SERVER_STORAGE_TYPE` | Storage type (`local`/`mysql`) | `local` | `mysql` |
+| `SERVER_STORAGE_URL` | Storage URL (empty for local) | `""` | `mysql+aiomysql://user:password@host:3306/db` |
 | `SERVER_DATA_DIR` | Local data dir (config/token/cache/stats/...); relative paths are anchored to project root. Adjust the Docker volume mount if you change it | `data` (under project root) | `/var/lib/grok2api` |
 
 ### Usage limits

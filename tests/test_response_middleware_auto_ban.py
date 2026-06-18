@@ -115,7 +115,7 @@ def test_auto_ban_loads_from_file_after_restart(monkeypatch, tmp_path):
 
 
 def test_auto_ban_does_not_persist_when_storage_mode_not_file(monkeypatch, tmp_path):
-    monkeypatch.setenv("STORAGE_MODE", "redis")
+    monkeypatch.setenv("STORAGE_MODE", "memory")
     ban_file = tmp_path / "banned_ips.txt"
     client = _build_client(monkeypatch, enabled=True, ban_file=ban_file)
 

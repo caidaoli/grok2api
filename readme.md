@@ -60,7 +60,7 @@ python scripts/smoke_test.py --base-url http://127.0.0.1:8000
 
 > 如果拉取镜像时报 `denied`：说明 GHCR 镜像不可匿名拉取（未公开或需要登录）。你可以先执行 `docker login ghcr.io`，或在 `.env` 里设置 `GROK2API_IMAGE` 指向你自己的公开镜像；也可以用上面的 `--build` 从源码构建运行。
 
-> 可选：复制 `.env.example` 为 `.env`，可配置端口/日志/存储等；并可通过 `COMPOSE_PROFILES` 一键启用 `redis/pgsql/mysql`（见 `.env.example` 内示例）。
+> 可选：复制 `.env.example` 为 `.env`，可配置端口/日志/存储等；并可通过 `COMPOSE_PROFILES=mysql` 一键启用 MySQL（见 `.env.example` 内示例）。
 
 > 部署一致性说明：本地（FastAPI）/ Docker / Cloudflare Workers 共用同一套管理功能语义（Token 筛选、API Key 管理、后台管理接口语义一致）。
 > Cloudflare 可通过 `.github/workflows/cloudflare-workers.yml` 一键部署（需先配置上述两个 Secrets），Docker 仍保持 `docker compose up -d` 一键启动。
@@ -124,8 +124,8 @@ python scripts/smoke_test.py --base-url http://127.0.0.1:8000
 | `SERVER_HOST`         | 服务监听地址                                        | `0.0.0.0` | `0.0.0.0`                                         |
 | `SERVER_PORT`         | 服务端口                                            | `8000`    | `8000`                                            |
 | `SERVER_WORKERS`      | Uvicorn worker 数量                                 | `1`       | `2`                                               |
-| `SERVER_STORAGE_TYPE` | 存储类型（`local`/`redis`/`mysql`/`pgsql`） | `local`   | `pgsql`                                           |
-| `SERVER_STORAGE_URL`  | 存储连接串（local 时可为空）                        | `""`      | `postgresql+asyncpg://user:password@host:5432/db` |
+| `SERVER_STORAGE_TYPE` | 存储类型（`local`/`mysql`） | `local`   | `mysql`                                           |
+| `SERVER_STORAGE_URL`  | 存储连接串（local 时可为空）                        | `""`      | `mysql+aiomysql://user:password@host:3306/db` |
 | `SERVER_DATA_DIR`     | 本地数据目录（config/token/缓存/统计等）；相对路径锚定到项目根。改动后 Docker 需同步调整卷挂载 | `data`（项目根下） | `/var/lib/grok2api`                       |
 
 ### 配置文件与升级迁移
